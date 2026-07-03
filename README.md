@@ -130,7 +130,7 @@ analysis.
 
 To add the connection manually in the Superset Operation Zone:
 
-1. Open http://localhost:8089 or http://localhost:8080/superset/operation/
+1. Open http://localhost:8080/api/superset/operation/ after logging in through the Super App.
 2. Sign in with the local Superset admin user from `.env`.
 3. Go to Settings, then Database Connections.
 4. Add a PostgreSQL database using:
@@ -141,9 +141,59 @@ To add the connection manually in the Superset Operation Zone:
 
 5. Test the connection, save it, then create datasets from the seeded tables.
 
-## Operation Superset Auth Flow
+## Architecture
 
-The intended operation-zone flow is:
+### English
+
+This platform separates the Super App integration layer from the Superset source
+repository. `bi-engine-platform` owns the UI shells, Go proxy/backend, local
+session management, Docker Compose orchestration, Keycloak setup, MongoDB, Nginx,
+and the local Public/Operation zone simulation. The Superset fork owns Superset
+source code, patches, image builds, map/custom driver changes, and Superset-only
+configuration.
+
+The Operation Zone does not use Superset guest tokens or embedded-Superset
+authentication. A user authenticates with Keycloak through Authorization Code
+Flow. Keycloak is expected to authenticate the user against LDAP user federation
+and the configured organizational unit (OU). After the callback, the Go backend
+exchanges the authorization code for Keycloak tokens, creates its own Super App
+session, and stores encrypted Keycloak access/refresh tokens in MongoDB.
+
+The browser receives only an `HttpOnly` same-origin session cookie. The raw
+session id is not stored in MongoDB; MongoDB stores a hash of that session id.
+Access and refresh tokens are encrypted with AES-GCM before being persisted. The
+encryption key material is derived from `BACKEND_SESSION_SECRET`, so that secret
+must be strong and environment-specific.
+
+When the user opens report design from the Super App menu, the
+`super-app-superset-ui` micro frontend is loaded. Its iframe points to the Go
+proxy path:
+
+```text
+/api/superset/operation/
+```
+
+The iframe does not call Superset directly. Browser requests include the Super
+App session cookie, the Go backend loads the session from MongoDB, decrypts or
+refreshes the Keycloak access token, and proxies the request to
+`superset-operation:8088` with:
+
+```text
+Authorization: Bearer <Keycloak access token>
+```
+
+Superset Operation uses a custom security manager:
+
+```text
+infra/superset/operation/keycloak_proxy_security_manager.py
+```
+
+That security manager validates the forwarded token against Keycloak's OpenID
+Connect token introspection endpoint. If the token is valid, Superset creates or
+loads the matching local user and serves the page without showing the Superset
+login screen.
+
+The intended Operation Zone request flow is:
 
 ```text
 User
@@ -158,6 +208,74 @@ User
   -> Superset Operation validates the token against Keycloak introspection
   -> Superset creates/loads the matching local user and serves the page without Superset login
 ```
+
+### فارسی
+
+این پلتفرم لایه یکپارچه‌سازی Super App را از سورس Superset جدا نگه می‌دارد.
+مخزن `bi-engine-platform` مالک UIها، بک‌اند و proxy با Go، مدیریت session محلی،
+Docker Compose، تنظیمات محلی Keycloak، MongoDB، Nginx و شبیه‌سازی محیط‌های
+Public و Operation است. مخزن fork شده Superset فقط مالک سورس Superset، patchها،
+ساخت image، تغییرات نقشه، driverها و تنظیمات اختصاصی Superset است.
+
+در محیط Operation از guest token و مکانیزم embedded Superset استفاده نمی‌شود.
+کاربر از طریق Authorization Code Flow وارد Keycloak می‌شود. Keycloak باید از
+طریق LDAP user federation و OU تعریف‌شده، کاربر را احراز هویت کند. بعد از
+callback، بک‌اند Go کد authorization را با توکن‌های Keycloak تعویض می‌کند،
+برای کاربر یک session مستقل در Super App می‌سازد و access token و refresh token
+را به صورت رمزنگاری‌شده در MongoDB ذخیره می‌کند.
+
+مرورگر فقط یک cookie از نوع `HttpOnly` و هم‌دامنه دریافت می‌کند. مقدار خام
+session id در MongoDB ذخیره نمی‌شود؛ فقط hash آن ذخیره می‌شود. توکن‌های
+Keycloak قبل از ذخیره شدن با AES-GCM رمزنگاری می‌شوند. کلید رمزنگاری از
+`BACKEND_SESSION_SECRET` مشتق می‌شود، بنابراین این مقدار باید قوی و مخصوص همان
+محیط باشد.
+
+وقتی کاربر از منوی Super App گزینه طراحی گزارش را انتخاب می‌کند، micro frontend
+به نام `super-app-superset-ui` باز می‌شود. iframe داخل این micro frontend به
+مسیر proxy بک‌اند Go اشاره می‌کند:
+
+```text
+/api/superset/operation/
+```
+
+iframe مستقیما به Superset وصل نمی‌شود. درخواست‌های مرورگر cookie مربوط به
+session در Super App را همراه خود دارند. بک‌اند Go با استفاده از این cookie،
+session را از MongoDB پیدا می‌کند، access token کاربر را decrypt یا در صورت نیاز
+refresh می‌کند، و درخواست را با header زیر به سرویس `superset-operation:8088`
+ارسال می‌کند:
+
+```text
+Authorization: Bearer <Keycloak access token>
+```
+
+در سمت Superset Operation یک security manager اختصاصی استفاده می‌شود:
+
+```text
+infra/superset/operation/keycloak_proxy_security_manager.py
+```
+
+این security manager توکن ارسال‌شده توسط Go proxy را از طریق endpoint
+introspection در Keycloak اعتبارسنجی می‌کند. اگر توکن معتبر باشد، Superset کاربر
+متناظر را ایجاد یا بارگذاری می‌کند و صفحه را بدون نمایش login داخلی Superset به
+کاربر نشان می‌دهد.
+
+جریان هدف در محیط Operation به شکل زیر است:
+
+```text
+کاربر
+  -> ورود به Super App با Authorization Code Flow در Keycloak
+  -> احراز هویت Keycloak بر اساس LDAP / OU
+  -> تعویض authorization code با توکن‌های Keycloak در بک‌اند Go
+  -> ذخیره توکن‌های رمزنگاری‌شده در MongoDB
+  -> دریافت cookie از نوع HttpOnly برای session در Super App
+  -> باز شدن iframe در super-app-superset-ui روی مسیر /api/superset/operation/
+  -> بارگذاری session توسط Go، decrypt/refresh کردن access token
+  -> proxy شدن درخواست iframe به superset-operation با Authorization: Bearer <token>
+  -> اعتبارسنجی توکن توسط Superset Operation از طریق Keycloak introspection
+  -> ایجاد/بارگذاری کاربر متناظر در Superset و نمایش صفحه بدون login مجدد
+```
+
+### Operation Zone Auth Details
 
 No guest-token or embedded-Superset flow is used for the Operation Zone.
 
