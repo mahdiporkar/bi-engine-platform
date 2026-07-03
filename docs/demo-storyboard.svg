@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">BI Engine Platform Demo Storyboard</title>
+  <desc id="desc">Visual storyboard for Super App login, Go proxy session, and Superset Operation iframe flow.</desc>
+  <rect width="1280" height="720" fill="#f5f7fa"/>
+  <text x="56" y="62" font-family="Arial, sans-serif" font-size="32" font-weight="700" fill="#172033">BI Engine Platform Demo</text>
+  <text x="56" y="96" font-family="Arial, sans-serif" font-size="16" fill="#5a6676">Authorization Code Flow, encrypted Mongo session, Go proxy, Superset Operation</text>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#355070"/>
+    </marker>
+    <style>
+      .card { fill: #ffffff; stroke: #d8e0ea; stroke-width: 2; rx: 10; }
+      .head { font: 700 18px Arial, sans-serif; fill: #172033; }
+      .body { font: 14px Arial, sans-serif; fill: #4d5b6d; }
+      .step { font: 700 14px Arial, sans-serif; fill: #1265b7; }
+      .line { stroke: #355070; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="card" x="56" y="142" width="240" height="150"/>
+  <text class="step" x="78" y="174">1. Login</text>
+  <text class="head" x="78" y="204">Super App UI</text>
+  <text class="body" x="78" y="232">User starts login from</text>
+  <text class="body" x="78" y="254">the Super App menu.</text>
+
+  <rect class="card" x="376" y="142" width="240" height="150"/>
+  <text class="step" x="398" y="174">2. Code Flow</text>
+  <text class="head" x="398" y="204">Keycloak + LDAP</text>
+  <text class="body" x="398" y="232">Keycloak authenticates</text>
+  <text class="body" x="398" y="254">against LDAP / OU.</text>
+
+  <rect class="card" x="696" y="142" width="240" height="150"/>
+  <text class="step" x="718" y="174">3. Session</text>
+  <text class="head" x="718" y="204">Go Proxy</text>
+  <text class="body" x="718" y="232">Exchanges code and stores</text>
+  <text class="body" x="718" y="254">encrypted tokens in Mongo.</text>
+
+  <rect class="card" x="1016" y="142" width="208" height="150"/>
+  <text class="step" x="1038" y="174">4. Cookie</text>
+  <text class="head" x="1038" y="204">Browser Session</text>
+  <text class="body" x="1038" y="232">HttpOnly same-origin</text>
+  <text class="body" x="1038" y="254">BI_ENGINE_SESSION.</text>
+
+  <rect class="card" x="136" y="430" width="250" height="150"/>
+  <text class="step" x="158" y="462">5. Report Designer</text>
+  <text class="head" x="158" y="492">Superset Micro UI</text>
+  <text class="body" x="158" y="520">iframe opens only via</text>
+  <text class="body" x="158" y="542">/api/superset/operation/</text>
+
+  <rect class="card" x="516" y="430" width="250" height="150"/>
+  <text class="step" x="538" y="462">6. Token Forwarding</text>
+  <text class="head" x="538" y="492">Go Proxy</text>
+  <text class="body" x="538" y="520">Loads session, decrypts token,</text>
+  <text class="body" x="538" y="542">adds Authorization header.</text>
+
+  <rect class="card" x="896" y="430" width="250" height="150"/>
+  <text class="step" x="918" y="462">7. No Superset Login</text>
+  <text class="head" x="918" y="492">Superset Operation</text>
+  <text class="body" x="918" y="520">Introspects token in Keycloak</text>
+  <text class="body" x="918" y="542">and serves BI screens.</text>
+
+  <path class="line" d="M296 217 H366"/>
+  <path class="line" d="M616 217 H686"/>
+  <path class="line" d="M936 217 H1006"/>
+  <path class="line" d="M1120 292 C1120 360 1020 360 1020 420"/>
+  <path class="line" d="M896 505 H776"/>
+  <path class="line" d="M516 505 H396"/>
+</svg>
+

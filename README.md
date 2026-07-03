@@ -143,6 +143,12 @@ To add the connection manually in the Superset Operation Zone:
 
 ## Architecture
 
+Visual references:
+
+- Mermaid architecture diagram: `docs/architecture.mmd`
+- Mermaid authentication sequence: `docs/auth-sequence.mmd`
+- Static demo storyboard: `docs/demo-storyboard.svg`
+
 ### English
 
 This platform separates the Super App integration layer from the Superset source

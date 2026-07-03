@@ -1,0 +1,31 @@
+flowchart LR
+    user[User Browser]
+    superApp[React Super App UI]
+    mfe[Superset Micro Frontend]
+    iframe[Superset iframe]
+    nginx[Nginx local gateway]
+    backend[Go Fiber backend / proxy]
+    mongo[(MongoDB sessions)]
+    keycloak[Keycloak]
+    ldap[(LDAP / OU)]
+    supersetOp[Superset Operation]
+    opDb[(Operation metadata DB)]
+    warehouse[(Mock data warehouse)]
+
+    user --> nginx
+    nginx --> superApp
+    superApp -->|Login| backend
+    backend -->|Authorization Code Flow| keycloak
+    keycloak -->|User federation| ldap
+    keycloak -->|Code callback| backend
+    backend -->|Encrypted tokens + session hash| mongo
+    superApp --> mfe
+    mfe --> iframe
+    iframe -->|/api/superset/operation/*| nginx
+    nginx --> backend
+    backend -->|Load session and decrypt token| mongo
+    backend -->|Authorization: Bearer Keycloak token| supersetOp
+    supersetOp -->|Introspection| keycloak
+    supersetOp --> opDb
+    supersetOp --> warehouse
+

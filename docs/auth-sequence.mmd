@@ -1,0 +1,29 @@
+sequenceDiagram
+    autonumber
+    actor User
+    participant UI as Super App UI
+    participant Go as Go backend / proxy
+    participant KC as Keycloak
+    participant LDAP as LDAP / OU
+    participant Mongo as MongoDB
+    participant MFE as Superset micro frontend
+    participant SS as Superset Operation
+
+    User->>UI: Click Login
+    UI->>Go: GET /api/auth/login
+    Go->>KC: Redirect to Authorization Code Flow
+    KC->>LDAP: Authenticate user by LDAP / OU
+    LDAP-->>KC: User verified
+    KC-->>Go: GET /api/auth/callback?code=...
+    Go->>KC: Exchange code for tokens
+    Go->>KC: Fetch userinfo
+    Go->>Mongo: Store session hash + encrypted tokens
+    Go-->>User: Set HttpOnly BI_ENGINE_SESSION cookie
+    User->>MFE: Open report designer
+    MFE->>Go: iframe GET /api/superset/operation/
+    Go->>Mongo: Load session and decrypt/refresh token
+    Go->>SS: Proxy request with Authorization: Bearer token
+    SS->>KC: Introspect token
+    KC-->>SS: active=true + claims
+    SS-->>User: Serve Superset without Superset login
+
