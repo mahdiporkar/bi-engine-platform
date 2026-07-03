@@ -118,6 +118,7 @@ h1 {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  margin-right: 14px;
   color: #1265b7;
   font-weight: 700;
   text-decoration: none;
@@ -146,4 +147,3 @@ code {
     grid-template-columns: 1fr;
   }
 }
-

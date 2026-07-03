@@ -1,5 +1,7 @@
 import os
 
+from keycloak_proxy_security_manager import KeycloakProxySecurityManager
+
 SECRET_KEY = os.environ.get("SUPERSET_SECRET_KEY", "change-me-local-superset-secret")
 GUEST_TOKEN_JWT_SECRET = os.environ.get(
     "SUPERSET_GUEST_TOKEN_JWT_SECRET",
@@ -16,9 +18,12 @@ SESSION_COOKIE_SECURE = False
 WTF_CSRF_ENABLED = False
 
 FEATURE_FLAGS = {
-    "EMBEDDED_SUPERSET": True,
     "DASHBOARD_RBAC": True,
 }
+
+CUSTOM_SECURITY_MANAGER = KeycloakProxySecurityManager
+AUTH_USER_REGISTRATION = True
+AUTH_USER_REGISTRATION_ROLE = os.environ.get("SUPERSET_KEYCLOAK_DEFAULT_ROLE", "Alpha")
 
 TALISMAN_ENABLED = False
 HTTP_HEADERS = {

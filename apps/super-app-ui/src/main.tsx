@@ -56,6 +56,9 @@ function App() {
               The dedicated React shell for BI embedding lives separately from the main
               Super App UI and is mounted behind the gateway at <code>/superset-mfe</code>.
             </p>
+            <a href="/api/auth/login">
+              Login <ExternalLink size={16} />
+            </a>
             <a href={supersetMfeUrl}>
               Launch <ExternalLink size={16} />
             </a>
@@ -67,4 +70,3 @@ function App() {
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
-

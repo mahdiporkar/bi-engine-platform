@@ -3,8 +3,9 @@ import { createRoot } from "react-dom/client";
 import { BarChart2, MonitorCog, PanelsTopLeft } from "lucide-react";
 import "./styles.css";
 
-const publicUrl = import.meta.env.VITE_SUPERSET_PUBLIC_URL ?? "/superset/public";
-const operationUrl = import.meta.env.VITE_SUPERSET_OPERATION_URL ?? "/superset/operation";
+const publicUrl = import.meta.env.VITE_SUPERSET_PUBLIC_URL ?? "/superset/public/";
+const operationUrl =
+  import.meta.env.VITE_SUPERSET_OPERATION_URL ?? "/api/superset/operation/";
 
 function App() {
   return (
@@ -37,7 +38,7 @@ function App() {
       <iframe
         title="Superset zone"
         name="superset-frame"
-        src={publicUrl}
+        src={operationUrl}
         className="frame"
         allow="fullscreen"
       />
@@ -46,4 +47,3 @@ function App() {
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
-

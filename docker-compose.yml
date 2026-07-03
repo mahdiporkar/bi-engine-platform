@@ -39,7 +39,7 @@ services:
     environment:
       VITE_API_BASE_URL: /api
       VITE_SUPERSET_PUBLIC_URL: /superset/public
-      VITE_SUPERSET_OPERATION_URL: /superset/operation
+      VITE_SUPERSET_OPERATION_URL: /api/superset/operation/
     networks:
       - platform
 
@@ -53,7 +53,9 @@ services:
       - "${BACKEND_PORT:-8090}:8090"
     environment:
       PORT: 8090
-      SESSION_SECRET: ${BACKEND_SESSION_SECRET:-change-me-local-session-secret}
+      SESSION_SECRET: ${BACKEND_SESSION_SECRET:-local-dev-session-secret-replace-before-shared-use}
+      BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL:-http://localhost:${NGINX_PORT:-8080}/api}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
       MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017}
       MONGO_DATABASE: ${MONGO_DATABASE:-bi_engine_platform}
       KEYCLOAK_BASE_URL: ${KEYCLOAK_BASE_URL:-http://keycloak:8080}
@@ -62,6 +64,7 @@ services:
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-local-dev-secret}
       SUPERSET_PUBLIC_URL: ${SUPERSET_PUBLIC_URL:-http://superset-public:8088}
       SUPERSET_OPERATION_URL: ${SUPERSET_OPERATION_URL:-http://superset-operation:8088}
+      ALLOW_SUPERSET_PROXY_WITHOUT_TOKEN: ${ALLOW_SUPERSET_PROXY_WITHOUT_TOKEN:-false}
     networks:
       - platform
 
@@ -165,8 +168,6 @@ services:
       superset fab create-admin --username $$SUPERSET_ADMIN_USERNAME --firstname BI --lastname Admin --email $$SUPERSET_ADMIN_EMAIL --password $$SUPERSET_ADMIN_PASSWORD || true &&
       superset init &&
       superset run -h 0.0.0.0 -p 8088"
-    ports:
-      - "${SUPERSET_OPERATION_PORT:-8089}:8088"
     environment:
       SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-change-me-local-superset-secret}
@@ -177,8 +178,15 @@ services:
       SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://superset:superset@superset-operation-db:5432/superset
       REDIS_HOST: superset-redis
       PUBLIC_BASE_URL: http://localhost:${NGINX_PORT:-8080}/superset/operation
+      KEYCLOAK_BASE_URL: ${KEYCLOAK_BASE_URL:-http://keycloak:8080}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-bi-engine}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-super-app}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-local-dev-secret}
+      SUPERSET_KEYCLOAK_DEFAULT_ROLE: ${SUPERSET_KEYCLOAK_DEFAULT_ROLE:-Alpha}
+      SUPERSET_KEYCLOAK_ADMIN_ROLES: ${SUPERSET_KEYCLOAK_ADMIN_ROLES:-bi-admin,superset-admin}
     volumes:
       - ./infra/superset/operation/superset_config.py:/app/pythonpath/superset_config.py:ro
+      - ./infra/superset/operation/keycloak_proxy_security_manager.py:/app/pythonpath/keycloak_proxy_security_manager.py:ro
     networks:
       - platform
 

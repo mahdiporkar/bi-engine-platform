@@ -101,7 +101,7 @@ Then update `SUPERSET_PUBLIC_IMAGE` and `SUPERSET_OPERATION_IMAGE` in `.env`.
    - Backend direct: http://localhost:8090
    - Keycloak: http://localhost:8081
    - Superset Public Zone direct: http://localhost:8088
-   - Superset Operation Zone direct: http://localhost:8089
+   - Superset Operation Zone via Go proxy: http://localhost:8080/api/superset/operation/
 
 ## Mock Data Warehouse
 
@@ -140,6 +140,61 @@ To add the connection manually in the Superset Operation Zone:
    ```
 
 5. Test the connection, save it, then create datasets from the seeded tables.
+
+## Operation Superset Auth Flow
+
+The intended operation-zone flow is:
+
+```text
+User
+  -> Super App Authorization Code Flow with Keycloak
+  -> Keycloak authenticates against LDAP / OU federation
+  -> Go backend exchanges the authorization code for Keycloak tokens
+  -> Go backend stores encrypted tokens in MongoDB
+  -> Browser receives an HttpOnly same-origin Super App session cookie
+  -> super-app-superset-ui iframe opens /api/superset/operation/
+  -> Go backend loads the session, decrypts/refreshes the Keycloak access token
+  -> Go backend proxies iframe traffic to superset-operation with Authorization: Bearer <token>
+  -> Superset Operation validates the token against Keycloak introspection
+  -> Superset creates/loads the matching local user and serves the page without Superset login
+```
+
+No guest-token or embedded-Superset flow is used for the Operation Zone.
+
+Local proxy route:
+
+```text
+/api/superset/operation/* -> super-app-backend -> superset-operation:8088
+```
+
+Superset Operation uses `infra/superset/operation/keycloak_proxy_security_manager.py`
+as `CUSTOM_SECURITY_MANAGER`. It expects a bearer token forwarded by the Go proxy
+and validates it through Keycloak's OpenID Connect token introspection endpoint.
+
+Backend auth endpoints:
+
+- `GET /api/auth/login` starts Keycloak Authorization Code Flow.
+- `GET /api/auth/callback` handles the code exchange and creates the local session.
+- `GET /api/auth/me` returns the current Super App session user.
+- `POST /api/auth/logout` deletes the local session.
+
+Session and token storage:
+
+- Browser cookie: `BI_ENGINE_SESSION`, `HttpOnly`, same-origin.
+- Mongo collection: `sessions`.
+- Mongo stores a hash of the session id, not the raw browser cookie value.
+- Access and refresh tokens are encrypted with AES-GCM.
+- Encryption key material is derived from `BACKEND_SESSION_SECRET`.
+- Use a strong non-default `BACKEND_SESSION_SECRET` before sharing the environment.
+
+Required Keycloak settings:
+
+- Keycloak must be configured with LDAP user federation for the target OU.
+- `KEYCLOAK_BASE_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`, and
+  `KEYCLOAK_CLIENT_SECRET` must point to a confidential client allowed to
+  introspect tokens.
+- Users with any role in `SUPERSET_KEYCLOAK_ADMIN_ROLES` become Superset `Admin`;
+  other valid users get `SUPERSET_KEYCLOAK_DEFAULT_ROLE`.
 
 ## Local Zones
 
