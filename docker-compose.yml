@@ -59,6 +59,7 @@ services:
       MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017}
       MONGO_DATABASE: ${MONGO_DATABASE:-bi_engine_platform}
       KEYCLOAK_BASE_URL: ${KEYCLOAK_BASE_URL:-http://keycloak:8080}
+      KEYCLOAK_PUBLIC_URL: ${KEYCLOAK_PUBLIC_URL:-http://localhost:${KEYCLOAK_PORT:-8081}}
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-bi-engine}
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-super-app}
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-local-dev-secret}
@@ -131,7 +132,14 @@ services:
       - platform
 
   superset-public:
-    image: ${SUPERSET_PUBLIC_IMAGE:-bi-engine-superset:local}
+    image: ${SUPERSET_IMAGE:-bi-engine-superset:local-source}
+    build:
+      context: "${SUPERSET_SOURCE_DIR:-E:\\Project\\superset}"
+      dockerfile: Dockerfile
+      target: dev
+      args:
+        DEV_MODE: "false"
+        NPM_BUILD_CMD: build
     depends_on:
       - superset-public-db
       - superset-redis
@@ -145,7 +153,6 @@ services:
     environment:
       SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-change-me-local-superset-secret}
-      SUPERSET_GUEST_TOKEN_JWT_SECRET: ${SUPERSET_GUEST_TOKEN_JWT_SECRET:-change-me-local-guest-token-secret}
       SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
       SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
       SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@example.local}
@@ -158,7 +165,7 @@ services:
       - platform
 
   superset-operation:
-    image: ${SUPERSET_OPERATION_IMAGE:-bi-engine-superset:local}
+    image: ${SUPERSET_IMAGE:-bi-engine-superset:local-source}
     depends_on:
       - mock-data-warehouse
       - superset-operation-db
@@ -171,7 +178,6 @@ services:
     environment:
       SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-change-me-local-superset-secret}
-      SUPERSET_GUEST_TOKEN_JWT_SECRET: ${SUPERSET_GUEST_TOKEN_JWT_SECRET:-change-me-local-guest-token-secret}
       SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
       SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
       SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@example.local}

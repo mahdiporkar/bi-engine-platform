@@ -44,38 +44,32 @@ bi-engine-platform/
 
 ## Superset Repository Boundary
 
-Do not copy Superset source code into this repository.
-
-Build the local Superset image from the Superset fork:
+Do not copy Superset source code into this repository. Keep the fork checked out
+locally and let Docker Compose build Superset from that source tree:
 
 ```powershell
 git clone https://github.com/mahdiporkar/superset.git
-cd superset
-docker build -t bi-engine-superset:local .
 ```
 
-If Docker Hub blocks the base images required by the Superset fork Dockerfile,
-build a local overlay image from an already available Superset base while using
-the local fork source as the build context:
+Set the fork path in `.env`:
 
 ```powershell
-docker build `
-  -f E:\Project\github-lab-poc\infra\superset\Dockerfile.local-source `
-  -t bi-engine-superset:local `
-  E:\Project\superset
+SUPERSET_SOURCE_DIR=E:\Project\superset
 ```
 
-This copies and installs the Python Superset backend from `E:\Project\superset`
-into the local image. Rebuild the image after changing the local Superset source.
+The `superset-public` service builds the Dockerfile inside `SUPERSET_SOURCE_DIR`.
+`superset-operation` uses that same local source-built image. They do not use the
+prebuilt `apache/superset` image:
 
-If the Public Zone and Operation Zone need separate images, build them from the same Superset fork and tag them as:
+```text
+bi-engine-superset:local-source
+```
+
+Rebuild these images after changing the local Superset fork:
 
 ```powershell
-docker build -t bi-engine-superset-public:local .
-docker build -t bi-engine-superset-operation:local .
+docker compose build superset-public
 ```
-
-Then update `SUPERSET_PUBLIC_IMAGE` and `SUPERSET_OPERATION_IMAGE` in `.env`.
 
 ## Local Run
 
@@ -85,7 +79,7 @@ Then update `SUPERSET_PUBLIC_IMAGE` and `SUPERSET_OPERATION_IMAGE` in `.env`.
    Copy-Item .env.example .env
    ```
 
-2. Build the Superset image from `mahdiporkar/superset` as described above.
+2. Confirm `SUPERSET_SOURCE_DIR` points to the local Superset fork.
 
 3. Start the platform:
 
@@ -302,6 +296,19 @@ Backend auth endpoints:
 - `GET /api/auth/me` returns the current Super App session user.
 - `POST /api/auth/logout` deletes the local session.
 
+Keycloak URL split:
+
+- `KEYCLOAK_BASE_URL` is the backend/container URL used by the Go backend and
+  Superset Operation for token exchange, userinfo, refresh, and introspection.
+- `KEYCLOAK_PUBLIC_URL` is the browser URL used only for the Authorization Code
+  Flow redirect. In local compose this should normally be `http://localhost:8081`.
+
+Operation routing:
+
+- `/api/superset/operation/*` is the canonical iframe/proxy route.
+- `/superset/operation/*` also routes to the Go backend proxy, so users cannot
+  bypass the Super App session path through the local nginx gateway.
+
 Session and token storage:
 
 - Browser cookie: `BI_ENGINE_SESSION`, `HttpOnly`, same-origin.
@@ -314,6 +321,12 @@ Session and token storage:
 Required Keycloak settings:
 
 - Keycloak must be configured with LDAP user federation for the target OU.
+- LDAP/OU mapping belongs in Keycloak, not in Superset. Configure the LDAP
+  provider, bind DN, user search base, user object classes, username/email
+  mappers, and group/role mapper in the `bi-engine` realm.
+- After LDAP login, Keycloak must issue tokens containing a stable `sub`,
+  `preferred_username`, and optionally `email`, `given_name`, `family_name`, and
+  realm/client roles.
 - `KEYCLOAK_BASE_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`, and
   `KEYCLOAK_CLIENT_SECRET` must point to a confidential client allowed to
   introspect tokens.

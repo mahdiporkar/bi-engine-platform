@@ -3,10 +3,6 @@ import os
 from keycloak_proxy_security_manager import KeycloakProxySecurityManager
 
 SECRET_KEY = os.environ.get("SUPERSET_SECRET_KEY", "change-me-local-superset-secret")
-GUEST_TOKEN_JWT_SECRET = os.environ.get(
-    "SUPERSET_GUEST_TOKEN_JWT_SECRET",
-    "local-operation-guest-token-secret-change-before-production",
-)
 SQLALCHEMY_DATABASE_URI = os.environ.get(
     "SQLALCHEMY_DATABASE_URI",
     "postgresql+psycopg2://superset:superset@superset-db:5432/superset",

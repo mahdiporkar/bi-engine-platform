@@ -32,6 +32,7 @@ type config struct {
 	CookieSecure         bool   `json:"-"`
 	BackendPublicURL     string `json:"backendPublicUrl"`
 	KeycloakBaseURL      string `json:"keycloakBaseUrl"`
+	KeycloakPublicURL    string `json:"keycloakPublicUrl"`
 	KeycloakRealm        string `json:"keycloakRealm"`
 	KeycloakClientID     string `json:"keycloakClientId"`
 	KeycloakClientSecret string `json:"-"`
@@ -143,7 +144,7 @@ func main() {
 		values.Set("redirect_uri", cfg.redirectURI())
 		values.Set("state", state)
 
-		return c.Redirect(cfg.keycloakRealmURL()+"/protocol/openid-connect/auth?"+values.Encode(), fiber.StatusFound)
+		return c.Redirect(cfg.keycloakPublicRealmURL()+"/protocol/openid-connect/auth?"+values.Encode(), fiber.StatusFound)
 	})
 
 	app.Get("/auth/callback", func(c *fiber.Ctx) error {
@@ -526,6 +527,10 @@ func (cfg config) keycloakRealmURL() string {
 	return strings.TrimRight(cfg.KeycloakBaseURL, "/") + "/realms/" + cfg.KeycloakRealm
 }
 
+func (cfg config) keycloakPublicRealmURL() string {
+	return strings.TrimRight(cfg.KeycloakPublicURL, "/") + "/realms/" + cfg.KeycloakRealm
+}
+
 func (cfg config) redirectURI() string {
 	return strings.TrimRight(cfg.BackendPublicURL, "/") + "/auth/callback"
 }
@@ -554,6 +559,7 @@ func loadConfig() config {
 		CookieSecure:         env("COOKIE_SECURE", "false") == "true",
 		BackendPublicURL:     env("BACKEND_PUBLIC_URL", "http://localhost:8080/api"),
 		KeycloakBaseURL:      env("KEYCLOAK_BASE_URL", "http://localhost:8081"),
+		KeycloakPublicURL:    env("KEYCLOAK_PUBLIC_URL", env("KEYCLOAK_BASE_URL", "http://localhost:8081")),
 		KeycloakRealm:        env("KEYCLOAK_REALM", "bi-engine"),
 		KeycloakClientID:     env("KEYCLOAK_CLIENT_ID", "super-app"),
 		KeycloakClientSecret: env("KEYCLOAK_CLIENT_SECRET", ""),
