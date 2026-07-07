@@ -67,8 +67,9 @@ type userInfo struct {
 }
 
 const (
-	sessionCookieName = "BI_ENGINE_SESSION"
-	stateCookieName   = "BI_ENGINE_OAUTH_STATE"
+	sessionCookieName  = "BI_ENGINE_SESSION"
+	stateCookieName    = "BI_ENGINE_OAUTH_STATE"
+	returnToCookieName = "BI_ENGINE_RETURN_TO"
 )
 
 func main() {
@@ -136,6 +137,17 @@ func main() {
 			Path:     "/",
 			MaxAge:   300,
 		})
+		if returnTo := safeReturnTo(c.Query("return_to")); returnTo != "" {
+			c.Cookie(&fiber.Cookie{
+				Name:     returnToCookieName,
+				Value:    returnTo,
+				HTTPOnly: true,
+				Secure:   cfg.CookieSecure,
+				SameSite: fiber.CookieSameSiteLaxMode,
+				Path:     "/",
+				MaxAge:   300,
+			})
+		}
 
 		values := url.Values{}
 		values.Set("client_id", cfg.KeycloakClientID)
@@ -220,8 +232,21 @@ func main() {
 			Path:     "/",
 			MaxAge:   -1,
 		})
+		returnTo := safeReturnTo(c.Cookies(returnToCookieName))
+		c.Cookie(&fiber.Cookie{
+			Name:     returnToCookieName,
+			Value:    "",
+			HTTPOnly: true,
+			Secure:   cfg.CookieSecure,
+			SameSite: fiber.CookieSameSiteLaxMode,
+			Path:     "/",
+			MaxAge:   -1,
+		})
+		if returnTo == "" {
+			returnTo = "/superset-mfe/"
+		}
 
-		return c.Redirect("/superset-mfe/", fiber.StatusFound)
+		return c.Redirect(returnTo, fiber.StatusFound)
 	})
 
 	app.Get("/auth/me", func(c *fiber.Ctx) error {
@@ -257,33 +282,11 @@ func main() {
 	})
 
 	app.All("/superset/operation/*", func(c *fiber.Ctx) error {
-		token := bearerToken(c)
-		if token == "" {
-			sessionToken, err := sessionAccessToken(c, cfg, sessions, codec)
-			if err != nil && env("ALLOW_SUPERSET_PROXY_WITHOUT_TOKEN", "false") != "true" {
-				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-					"error": "missing or expired Super App session",
-				})
-			}
-			token = sessionToken
-		}
-		if token == "" && env("ALLOW_SUPERSET_PROXY_WITHOUT_TOKEN", "false") != "true" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "missing Keycloak access token",
-			})
-		}
-		if token != "" {
-			c.Request().Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
-		}
+		return proxySuperset(c, cfg, sessions, codec, cfg.SupersetOperationURL, "/api/superset/operation", "operation")
+	})
 
-		target := strings.TrimRight(cfg.SupersetOperationURL, "/") + "/" + c.Params("*")
-		if query := string(c.Request().URI().QueryString()); query != "" {
-			target += "?" + query
-		}
-
-		c.Request().Header.Set("X-BI-Engine-Proxy", "super-app-backend")
-		c.Request().Header.Set("X-Forwarded-Prefix", "/api/superset/operation")
-		return proxy.Do(c, target)
+	app.All("/superset/public/*", func(c *fiber.Ctx) error {
+		return proxySuperset(c, cfg, sessions, codec, cfg.SupersetPublicURL, "/superset/public", "public")
 	})
 
 	app.Post("/sessions", func(c *fiber.Ctx) error {
@@ -327,6 +330,43 @@ func main() {
 	})
 
 	log.Fatal(app.Listen(":" + cfg.Port))
+}
+
+func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *tokenCodec, upstreamBaseURL string, publicPrefix string, zone string) error {
+	token := bearerToken(c)
+	if token == "" {
+		sessionToken, err := sessionAccessToken(c, cfg, sessions, codec)
+		if err != nil && zone == "operation" && env("ALLOW_SUPERSET_PROXY_WITHOUT_TOKEN", "false") != "true" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "missing or expired Super App session",
+			})
+		}
+		token = sessionToken
+	}
+	if token == "" && env("ALLOW_SUPERSET_PROXY_WITHOUT_TOKEN", "false") != "true" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "missing Keycloak access token",
+		})
+	}
+	if token != "" {
+		c.Request().Header.Set(fiber.HeaderAuthorization, "Bearer "+token)
+	}
+
+	wildcard := c.Params("*")
+	if strings.HasSuffix(c.Path(), "/") && wildcard != "" && !strings.HasSuffix(wildcard, "/") {
+		wildcard += "/"
+	}
+	target := strings.TrimRight(upstreamBaseURL, "/") + strings.TrimRight(publicPrefix, "/") + "/" + wildcard
+	if query := string(c.Request().URI().QueryString()); query != "" {
+		target += "?" + query
+	}
+
+	c.Request().Header.Set("X-BI-Engine-Proxy", "super-app-backend")
+	if err := proxy.Do(c, target); err != nil {
+		return err
+	}
+	rewriteSupersetRedirect(c, upstreamBaseURL, publicPrefix)
+	return nil
 }
 
 type tokenCodec struct {
@@ -548,6 +588,42 @@ func bearerToken(c *fiber.Ctx) string {
 	}
 
 	return ""
+}
+
+func safeReturnTo(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") || strings.Contains(value, "://") {
+		return ""
+	}
+	return value
+}
+
+func rewriteSupersetRedirect(c *fiber.Ctx, upstreamBaseURL string, publicPrefix string) {
+	location := c.Response().Header.Peek(fiber.HeaderLocation)
+	if len(location) == 0 {
+		return
+	}
+
+	value := string(location)
+	upstream := strings.TrimRight(upstreamBaseURL, "/")
+	prefix := strings.TrimRight(publicPrefix, "/")
+
+	if strings.HasPrefix(value, upstream+"/") {
+		c.Response().Header.Set(fiber.HeaderLocation, prefix+strings.TrimPrefix(value, upstream))
+		return
+	}
+	if !strings.HasPrefix(value, "/") && !strings.Contains(value, "://") {
+		relativePrefix := strings.TrimLeft(prefix, "/")
+		if strings.HasPrefix(value, relativePrefix+"/") {
+			c.Response().Header.Set(fiber.HeaderLocation, "/"+value)
+			return
+		}
+		c.Response().Header.Set(fiber.HeaderLocation, prefix+"/"+strings.TrimLeft(value, "/"))
+		return
+	}
+	if strings.HasPrefix(value, "/") && !strings.HasPrefix(value, prefix+"/") {
+		c.Response().Header.Set(fiber.HeaderLocation, prefix+value)
+	}
 }
 
 func loadConfig() config {

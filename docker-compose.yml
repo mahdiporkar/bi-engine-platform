@@ -87,6 +87,8 @@ services:
     environment:
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8081}
+      KC_HOSTNAME_STRICT: "false"
     volumes:
       - ./infra/keycloak/realm-bi-engine.json:/opt/keycloak/data/import/realm-bi-engine.json:ro
     networks:
@@ -139,7 +141,7 @@ services:
       target: dev
       args:
         DEV_MODE: "false"
-        NPM_BUILD_CMD: build
+        NPM_BUILD_CMD: build-dev
     depends_on:
       - superset-public-db
       - superset-redis
@@ -152,6 +154,7 @@ services:
       - "${SUPERSET_PUBLIC_PORT:-8088}:8088"
     environment:
       SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+      SUPERSET_APP_ROOT: /superset/public
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-change-me-local-superset-secret}
       SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
       SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
@@ -159,8 +162,15 @@ services:
       SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://superset:superset@superset-public-db:5432/superset
       REDIS_HOST: superset-redis
       PUBLIC_BASE_URL: http://localhost:${NGINX_PORT:-8080}/superset/public
+      KEYCLOAK_BASE_URL: ${KEYCLOAK_BASE_URL:-http://keycloak:8080}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-bi-engine}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-super-app}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-local-dev-secret}
+      SUPERSET_KEYCLOAK_DEFAULT_ROLE: ${SUPERSET_PUBLIC_KEYCLOAK_DEFAULT_ROLE:-Gamma}
+      SUPERSET_KEYCLOAK_ADMIN_ROLES: ${SUPERSET_KEYCLOAK_ADMIN_ROLES:-bi-admin,superset-admin}
     volumes:
       - ./infra/superset/public/superset_config.py:/app/pythonpath/superset_config.py:ro
+      - ./infra/superset/operation/keycloak_proxy_security_manager.py:/app/pythonpath/keycloak_proxy_security_manager.py:ro
     networks:
       - platform
 
@@ -177,6 +187,7 @@ services:
       superset run -h 0.0.0.0 -p 8088"
     environment:
       SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+      SUPERSET_APP_ROOT: /api/superset/operation
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-change-me-local-superset-secret}
       SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
       SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}

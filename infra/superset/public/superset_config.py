@@ -1,5 +1,7 @@
 import os
 
+from keycloak_proxy_security_manager import KeycloakProxySecurityManager
+
 SECRET_KEY = os.environ.get("SUPERSET_SECRET_KEY", "change-me-local-superset-secret")
 GUEST_TOKEN_JWT_SECRET = os.environ.get(
     "SUPERSET_GUEST_TOKEN_JWT_SECRET",
@@ -11,9 +13,12 @@ SQLALCHEMY_DATABASE_URI = os.environ.get(
 )
 
 ENABLE_PROXY_FIX = True
+APPLICATION_ROOT = "/superset/public"
 SESSION_COOKIE_SAMESITE = "None"
 SESSION_COOKIE_SECURE = False
 WTF_CSRF_ENABLED = False
+RECAPTCHA_PUBLIC_KEY = ""
+RECAPTCHA_PRIVATE_KEY = ""
 
 FEATURE_FLAGS = {
     "DASHBOARD_RBAC": True,
@@ -25,4 +30,7 @@ HTTP_HEADERS = {
 }
 
 PUBLIC_ROLE_LIKE = "Gamma"
+CUSTOM_SECURITY_MANAGER = KeycloakProxySecurityManager
+AUTH_USER_REGISTRATION = True
+AUTH_USER_REGISTRATION_ROLE = os.environ.get("SUPERSET_KEYCLOAK_DEFAULT_ROLE", "Gamma")
 APP_NAME = "BI Engine Public Zone"
