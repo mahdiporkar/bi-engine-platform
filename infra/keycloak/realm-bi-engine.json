@@ -22,6 +22,20 @@
       ],
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true
+    },
+    {
+      "clientId": "superset-operation",
+      "name": "Superset Operation",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "local-dev-operation-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "attributes": {
+        "access.token.lifespan": "300"
+      }
     }
   ],
   "users": [

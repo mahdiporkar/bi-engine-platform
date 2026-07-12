@@ -25,19 +25,27 @@ import (
 )
 
 type config struct {
-	Port                 string `json:"port"`
-	MongoURI             string `json:"-"`
-	MongoDatabase        string `json:"mongoDatabase"`
-	SessionSecret        string `json:"-"`
-	CookieSecure         bool   `json:"-"`
-	BackendPublicURL     string `json:"backendPublicUrl"`
-	KeycloakBaseURL      string `json:"keycloakBaseUrl"`
-	KeycloakPublicURL    string `json:"keycloakPublicUrl"`
-	KeycloakRealm        string `json:"keycloakRealm"`
-	KeycloakClientID     string `json:"keycloakClientId"`
-	KeycloakClientSecret string `json:"-"`
-	SupersetPublicURL    string `json:"supersetPublicUrl"`
-	SupersetOperationURL string `json:"supersetOperationUrl"`
+	Port                                     string `json:"port"`
+	MongoURI                                 string `json:"-"`
+	MongoDatabase                            string `json:"mongoDatabase"`
+	SessionSecret                            string `json:"-"`
+	CookieSecure                             bool   `json:"-"`
+	BackendPublicURL                         string `json:"backendPublicUrl"`
+	KeycloakBaseURL                          string `json:"keycloakBaseUrl"`
+	KeycloakPublicURL                        string `json:"keycloakPublicUrl"`
+	KeycloakRealm                            string `json:"keycloakRealm"`
+	KeycloakClientID                         string `json:"keycloakClientId"`
+	KeycloakClientSecret                     string `json:"-"`
+	OperationKeycloakBaseURL                 string `json:"operationKeycloakBaseUrl"`
+	OperationKeycloakRealm                   string `json:"operationKeycloakRealm"`
+	OperationKeycloakClientID                string `json:"operationKeycloakClientId"`
+	OperationKeycloakClientSecret            string `json:"-"`
+	OperationTokenExchangeEnabled            bool   `json:"operationTokenExchangeEnabled"`
+	OperationTokenExchangeAudience           string `json:"operationTokenExchangeAudience"`
+	OperationTokenExchangeRequestedIssuer    string `json:"operationTokenExchangeRequestedIssuer"`
+	OperationTokenExchangeRequestedTokenType string `json:"operationTokenExchangeRequestedTokenType"`
+	SupersetPublicURL                        string `json:"supersetPublicUrl"`
+	SupersetOperationURL                     string `json:"supersetOperationUrl"`
 }
 
 type session struct {
@@ -343,6 +351,15 @@ func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *
 		}
 		token = sessionToken
 	}
+	if token != "" && zone == "operation" && cfg.OperationTokenExchangeEnabled {
+		operationToken, err := exchangeOperationAccessToken(cfg, token)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "operation token exchange failed",
+			})
+		}
+		token = operationToken.AccessToken
+	}
 	if token == "" && env("ALLOW_SUPERSET_PROXY_WITHOUT_TOKEN", "false") != "true" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"error": "missing Keycloak access token",
@@ -536,6 +553,53 @@ func tokenRequest(cfg config, values url.Values) (tokenResponse, error) {
 	return tokens, nil
 }
 
+func exchangeOperationAccessToken(cfg config, subjectToken string) (tokenResponse, error) {
+	values := url.Values{}
+	values.Set("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
+	values.Set("subject_token", subjectToken)
+	values.Set("subject_token_type", "urn:ietf:params:oauth:token-type:access_token")
+	if cfg.OperationTokenExchangeRequestedTokenType != "" {
+		values.Set("requested_token_type", cfg.OperationTokenExchangeRequestedTokenType)
+	}
+	if cfg.OperationTokenExchangeAudience != "" {
+		values.Set("audience", cfg.OperationTokenExchangeAudience)
+	}
+	if cfg.OperationTokenExchangeRequestedIssuer != "" {
+		values.Set("requested_issuer", cfg.OperationTokenExchangeRequestedIssuer)
+	}
+	return operationTokenRequest(cfg, values)
+}
+
+func operationTokenRequest(cfg config, values url.Values) (tokenResponse, error) {
+	values.Set("client_id", cfg.OperationKeycloakClientID)
+	values.Set("client_secret", cfg.OperationKeycloakClientSecret)
+
+	req, err := http.NewRequest(http.MethodPost, cfg.operationKeycloakRealmURL()+"/protocol/openid-connect/token", strings.NewReader(values.Encode()))
+	if err != nil {
+		return tokenResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return tokenResponse{}, err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		return tokenResponse{}, errors.New("operation Keycloak token exchange failed")
+	}
+
+	var tokens tokenResponse
+	if err := json.NewDecoder(res.Body).Decode(&tokens); err != nil {
+		return tokenResponse{}, err
+	}
+	if tokens.AccessToken == "" {
+		return tokenResponse{}, errors.New("operation Keycloak did not return an access token")
+	}
+	return tokens, nil
+}
+
 func fetchUserInfo(cfg config, accessToken string) (userInfo, error) {
 	req, err := http.NewRequest(http.MethodGet, cfg.keycloakRealmURL()+"/protocol/openid-connect/userinfo", nil)
 	if err != nil {
@@ -565,6 +629,10 @@ func fetchUserInfo(cfg config, accessToken string) (userInfo, error) {
 
 func (cfg config) keycloakRealmURL() string {
 	return strings.TrimRight(cfg.KeycloakBaseURL, "/") + "/realms/" + cfg.KeycloakRealm
+}
+
+func (cfg config) operationKeycloakRealmURL() string {
+	return strings.TrimRight(cfg.OperationKeycloakBaseURL, "/") + "/realms/" + cfg.OperationKeycloakRealm
 }
 
 func (cfg config) keycloakPublicRealmURL() string {
@@ -627,20 +695,32 @@ func rewriteSupersetRedirect(c *fiber.Ctx, upstreamBaseURL string, publicPrefix 
 }
 
 func loadConfig() config {
+	operationRequestedTokenType := env(
+		"OPERATION_KEYCLOAK_TOKEN_EXCHANGE_REQUESTED_TOKEN_TYPE",
+		"urn:ietf:params:oauth:token-type:access_token",
+	)
 	return config{
-		Port:                 env("PORT", "8090"),
-		MongoURI:             env("MONGO_URI", "mongodb://localhost:27017"),
-		MongoDatabase:        env("MONGO_DATABASE", "bi_engine_platform"),
-		SessionSecret:        env("SESSION_SECRET", ""),
-		CookieSecure:         env("COOKIE_SECURE", "false") == "true",
-		BackendPublicURL:     env("BACKEND_PUBLIC_URL", "http://localhost:8080/api"),
-		KeycloakBaseURL:      env("KEYCLOAK_BASE_URL", "http://localhost:8081"),
-		KeycloakPublicURL:    env("KEYCLOAK_PUBLIC_URL", env("KEYCLOAK_BASE_URL", "http://localhost:8081")),
-		KeycloakRealm:        env("KEYCLOAK_REALM", "bi-engine"),
-		KeycloakClientID:     env("KEYCLOAK_CLIENT_ID", "super-app"),
-		KeycloakClientSecret: env("KEYCLOAK_CLIENT_SECRET", ""),
-		SupersetPublicURL:    env("SUPERSET_PUBLIC_URL", "http://localhost:8088"),
-		SupersetOperationURL: env("SUPERSET_OPERATION_URL", "http://localhost:8089"),
+		Port:                                     env("PORT", "8090"),
+		MongoURI:                                 env("MONGO_URI", "mongodb://localhost:27017"),
+		MongoDatabase:                            env("MONGO_DATABASE", "bi_engine_platform"),
+		SessionSecret:                            env("SESSION_SECRET", ""),
+		CookieSecure:                             env("COOKIE_SECURE", "false") == "true",
+		BackendPublicURL:                         env("BACKEND_PUBLIC_URL", "http://localhost:8080/api"),
+		KeycloakBaseURL:                          env("KEYCLOAK_BASE_URL", "http://localhost:8081"),
+		KeycloakPublicURL:                        env("KEYCLOAK_PUBLIC_URL", env("KEYCLOAK_BASE_URL", "http://localhost:8081")),
+		KeycloakRealm:                            env("KEYCLOAK_REALM", "bi-engine"),
+		KeycloakClientID:                         env("KEYCLOAK_CLIENT_ID", "super-app"),
+		KeycloakClientSecret:                     env("KEYCLOAK_CLIENT_SECRET", ""),
+		OperationKeycloakBaseURL:                 env("OPERATION_KEYCLOAK_BASE_URL", env("KEYCLOAK_BASE_URL", "http://localhost:8081")),
+		OperationKeycloakRealm:                   env("OPERATION_KEYCLOAK_REALM", env("KEYCLOAK_REALM", "bi-engine")),
+		OperationKeycloakClientID:                env("OPERATION_KEYCLOAK_CLIENT_ID", env("KEYCLOAK_CLIENT_ID", "super-app")),
+		OperationKeycloakClientSecret:            env("OPERATION_KEYCLOAK_CLIENT_SECRET", env("KEYCLOAK_CLIENT_SECRET", "")),
+		OperationTokenExchangeEnabled:            env("OPERATION_KEYCLOAK_TOKEN_EXCHANGE_ENABLED", "true") == "true",
+		OperationTokenExchangeAudience:           env("OPERATION_KEYCLOAK_TOKEN_EXCHANGE_AUDIENCE", ""),
+		OperationTokenExchangeRequestedIssuer:    env("OPERATION_KEYCLOAK_TOKEN_EXCHANGE_REQUESTED_ISSUER", ""),
+		OperationTokenExchangeRequestedTokenType: operationRequestedTokenType,
+		SupersetPublicURL:                        env("SUPERSET_PUBLIC_URL", "http://localhost:8088"),
+		SupersetOperationURL:                     env("SUPERSET_OPERATION_URL", "http://localhost:8089"),
 	}
 }
 
