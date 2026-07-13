@@ -294,7 +294,10 @@ func main() {
 	})
 
 	app.All("/superset/public/*", func(c *fiber.Ctx) error {
-		return proxySuperset(c, cfg, sessions, codec, cfg.SupersetOperationURL, "/api/superset/operation", "/superset/public", "operation")
+		if isSupersetDataRequest(c.Params("*")) {
+			return proxySuperset(c, cfg, sessions, codec, cfg.SupersetOperationURL, "/api/superset/operation", "/superset/public", "operation")
+		}
+		return proxySuperset(c, cfg, sessions, codec, cfg.SupersetPublicURL, "/superset/public", "/superset/public", "public")
 	})
 
 	app.Post("/sessions", func(c *fiber.Ctx) error {
@@ -384,6 +387,30 @@ func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *
 	}
 	rewriteSupersetRedirect(c, upstreamBaseURL, upstreamPrefix, publicPrefix)
 	return nil
+}
+
+func isSupersetDataRequest(wildcard string) bool {
+	path := "/" + strings.TrimLeft(strings.ToLower(strings.TrimSpace(wildcard)), "/")
+	dataPrefixes := []string{
+		"/api/",
+		"/superset/explore_json",
+		"/superset/results",
+		"/superset/slice_json",
+		"/superset/log",
+		"/superset/csv",
+		"/superset/excel",
+		"/superset/sqllab",
+		"/superset/queries",
+		"/superset/sql_json",
+		"/savedqueryviewapi/",
+		"/sqllab/",
+	}
+	for _, prefix := range dataPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 type tokenCodec struct {

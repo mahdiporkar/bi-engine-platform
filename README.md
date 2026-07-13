@@ -575,8 +575,8 @@ import (
 - `OperationTokenExchangeAudience`: مقدار audience مورد انتظار در توکن عملیات.
 - `OperationTokenExchangeRequestedIssuer`: issuer هدف در سناریوهای چند issuer.
 - `OperationTokenExchangeRequestedTokenType`: نوع توکن خروجی؛ پیش‌فرض access token است.
-- `SupersetPublicURL`: آدرس Superset عمومی برای سناریوهای نمایش/کانفیگ؛ در معماری فعلی مسیر `/superset/public/*` برای سرویس‌دهی عملیاتی از این upstream استفاده نمی‌کند.
-- `SupersetOperationURL`: آدرس upstream واقعی Superset عملیات که requestهای Operation و requestهای سرویس‌دهی‌شده از مسیر Public به آن forward می‌شوند.
+- `SupersetPublicURL`: آدرس Superset عمومی برای UI، صفحه‌ها و static assetهای مسیر `/superset/public/*`.
+- `SupersetOperationURL`: آدرس upstream واقعی Superset عملیات که requestهای API، JSON، chart data، query و اجرای سرویس به آن forward می‌شوند.
 
 نکته امنیتی: فیلدهایی مثل `MongoURI`، `SessionSecret` و client secretها نباید از
 endpoint `/config` به frontend بروند. به همین دلیل `json:"-"` دارند.
@@ -784,19 +784,32 @@ Operation و داخل `proxySuperset` ساخته می‌شود.
 
 #### route `ALL /superset/public/*`
 
-هدف: نگه داشتن مسیر بیرونی Public، اما ارسال request به Superset Operation.
+هدف: جدا کردن UI عمومی از سرویس‌دهی عملیاتی.
 
-در معماری فعلی Superset Public فقط نقش نمایش دارد و مرجع سرویس‌دهی قابل اعتماد
-نیست. به همین دلیل route بیرونی `/superset/public/*` در Go proxy به upstream
-عملیاتی وصل می‌شود:
+در معماری فعلی Superset Public فقط نقش UI دارد. بنابراین Go proxy برای مسیر
+بیرونی `/superset/public/*` بر اساس نوع path تصمیم می‌گیرد:
 
 ```text
-/superset/public/* -> Go proxy -> /api/superset/operation/* -> superset-operation:8088
+/superset/public/                  -> Go proxy -> superset-public:8088
+/superset/public/static/*           -> Go proxy -> superset-public:8088
+/superset/public/superset/welcome/*  -> Go proxy -> superset-public:8088
+/superset/public/api/*              -> Go proxy -> superset-operation:8088
+/superset/public/superset/*_json*   -> Go proxy -> superset-operation:8088
+/superset/public/superset/results*  -> Go proxy -> superset-operation:8088
 ```
 
-رفتار این route از نظر امنیتی مثل Operation است:
+رفتار این route برای درخواست‌های UI:
+
+- upstream برابر `cfg.SupersetPublicURL` است.
+- prefix واقعی upstream برابر `/superset/public` است.
+- `zone` برابر `public` است.
+- Token Exchange عملیات انجام نمی‌شود.
+
+رفتار این route برای درخواست‌های API/JSON/data:
 
 - `zone` برابر `operation` ارسال می‌شود.
+- upstream برابر `cfg.SupersetOperationURL` است.
+- prefix واقعی upstream برابر `/api/superset/operation` است.
 - Token Exchange با Keycloak عملیات انجام می‌شود.
 - توکن عمومی مستقیما به Superset داده نمی‌شود.
 - header نهایی برای Superset Operation شامل `Authorization: Bearer <operation token>` است.
@@ -848,7 +861,7 @@ Authorization: Bearer <token>
 
 10. `wildcard := c.Params("*")` بخش dynamic مسیر را می‌خواند.
 11. اگر مسیر با slash تمام شده باشد، slash حفظ می‌شود تا Superset redirect اشتباه نسازد.
-12. `target` با ترکیب `upstreamBaseURL`، `upstreamPrefix` و `wildcard` ساخته می‌شود؛ بنابراین ممکن است مسیر بیرونی `/superset/public/*` باشد اما مسیر واقعی upstream برابر `/api/superset/operation/*` شود.
+12. `target` با ترکیب `upstreamBaseURL`، `upstreamPrefix` و `wildcard` ساخته می‌شود؛ برای UI مسیر واقعی upstream همان `/superset/public/*` است، اما برای API/JSON/data مسیر بیرونی `/superset/public/*` به `/api/superset/operation/*` نگاشت می‌شود.
 13. query string اصلی request به target اضافه می‌شود.
 14. header `X-BI-Engine-Proxy` برای trace/debug تنظیم می‌شود.
 15. `proxy.Do(c, target)` request را به Superset forward می‌کند.
@@ -857,6 +870,45 @@ Authorization: Bearer <token>
 
 نکته کلیدی: در Operation، Superset هیچ وقت توکن عمومی را دریافت نمی‌کند؛ اگر
 Token Exchange روشن باشد، همیشه توکن عملیات در header قرار می‌گیرد.
+
+#### متد `isSupersetDataRequest`
+
+هدف: تشخیص اینکه یک request زیر مسیر public فقط UI است یا باید به Superset
+Operation برود.
+
+این متد فقط روی route زیر اثر دارد:
+
+```text
+/superset/public/*
+```
+
+منطق:
+
+1. مقدار wildcard مسیر خوانده می‌شود.
+2. مسیر trim و lowercase می‌شود.
+3. اگر مسیر با prefixهای عملیاتی شروع شود، خروجی `true` است.
+4. اگر مسیر عملیاتی نباشد، خروجی `false` است و request به Superset Public می‌رود.
+
+prefixهای عملیاتی شامل این موارد هستند:
+
+```text
+/api/
+/superset/explore_json
+/superset/results
+/superset/slice_json
+/superset/log
+/superset/csv
+/superset/excel
+/superset/sqllab
+/superset/queries
+/superset/sql_json
+/savedqueryviewapi/
+/sqllab/
+```
+
+پس اگر مرورگر صفحه UI را بخواهد، request از `superset-public` پاسخ می‌گیرد؛ اما
+اگر همان UI درخواست chart data، API، JSON، SQL Lab یا export بفرستد، Go proxy آن
+را به `superset-operation` می‌فرستد.
 
 #### struct و متدهای `tokenCodec`
 
@@ -1350,12 +1402,31 @@ The POC runs two Superset containers from locally built images:
 - `superset-operation` uses `infra/superset/operation/superset_config.py`
 
 In this architecture, `superset-public` is treated as the public/display-side
-Superset surface. It is not the trusted service authority for operational
-requests. Browser-facing requests under `/superset/public/*` still go through
-the Go proxy, but the Go proxy forwards them to `superset-operation` by mapping:
+Superset surface. It serves UI pages and static frontend assets only. It is not
+the trusted service authority for operational JSON, query, chart-data, or API
+requests.
+
+Browser-facing requests under `/superset/public/*` still go through the Go
+proxy. The Go proxy is path-aware:
 
 ```text
-/superset/public/* -> super-app-backend -> /api/superset/operation/* -> superset-operation:8088
+/superset/public/                      -> super-app-backend -> superset-public:8088
+/superset/public/static/*              -> super-app-backend -> superset-public:8088
+/superset/public/superset/welcome/*     -> super-app-backend -> superset-public:8088
+/superset/public/api/*                  -> super-app-backend -> superset-operation:8088
+/superset/public/superset/*_json*       -> super-app-backend -> superset-operation:8088
+/superset/public/superset/results*      -> super-app-backend -> superset-operation:8088
+/superset/public/superset/log*          -> super-app-backend -> superset-operation:8088
+```
+
+Operational requests are internally mapped from the public browser path to the
+Operation application root:
+
+```text
+/superset/public/api/v1/chart/data
+  -> super-app-backend
+  -> /api/superset/operation/api/v1/chart/data
+  -> superset-operation:8088
 ```
 
 `superset-operation` is the service-side Superset instance. It owns operational
