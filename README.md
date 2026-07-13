@@ -1433,3 +1433,940 @@ Operation application root:
 authentication, token introspection, DWH connectivity, and service execution.
 
 Both configs are integration-time settings only. Superset code patches, map changes, Oracle drivers, OAuth changes, and image build logic remain in the Superset fork.
+
+## مرجع فارسی پیاده‌سازی معماری Public UI و Operation Service
+
+این بخش، توضیح نهایی و فارسی معماری فعلی پروژه است. هدف این پیاده‌سازی این است
+که Superset محیط عمومی فقط نقش نمایش و UI داشته باشد و Superset محیط عملیات نقش
+سرویس واقعی را اجرا کند. یعنی مرورگر کاربر ظاهر Superset را از مسیر عمومی می‌بیند،
+اما هر درخواستی که ماهیت API، JSON، query، chart data، export یا نتیجه محاسباتی
+داشته باشد توسط Go proxy به Superset عملیات فرستاده می‌شود.
+
+### تعریف نقش هر محیط
+
+`superset-public`:
+
+- نقش اصلی آن ارائه UI و assetهای frontend است.
+- کاربر از مسیر `/superset/public/` آن را می‌بیند.
+- در معماری هدف، مرجع معتبر data نیست.
+- نباید به عنوان محل اصلی اتصال DWH، اجرای query یا تولید chart data در نظر گرفته شود.
+- در این POC هنوز یک container کامل Superset است، چون خود Superset فقط React خالص نیست و برای bootstrap صفحه‌ها به backend Flask خودش هم نیاز دارد.
+
+`superset-operation`:
+
+- نقش اصلی آن سرویس‌دهی عملیاتی است.
+- مسیر canonical آن از پشت Go proxy برابر `/api/superset/operation/` است.
+- اتصال DWH تستی فقط در این محیط provision می‌شود.
+- token ارسال‌شده توسط Go proxy را introspect می‌کند.
+- JSON، API، chart data، export، SQL Lab و درخواست‌های داده‌ای را پاسخ می‌دهد.
+
+`super-app-backend`:
+
+- نقطه کنترل session، token، refresh token، Token Exchange و proxy است.
+- browser مستقیما access token را مدیریت نمی‌کند.
+- cookie داخلی Super App را می‌خواند.
+- access token عمومی Keycloak را از MongoDB decrypt یا refresh می‌کند.
+- برای مسیرهای عملیات، توکن عمومی را با Token Exchange به توکن عملیات تبدیل می‌کند.
+- request را با `Authorization: Bearer <operation-token>` به Superset عملیات می‌فرستد.
+
+### جریان نهایی درخواست‌ها
+
+```text
+کاربر
+  -> مرورگر
+  -> Nginx gateway روی http://localhost:8080
+  -> Go proxy در super-app-backend
+  -> اگر مسیر UI باشد: superset-public
+  -> اگر مسیر data/API باشد: Token Exchange و سپس superset-operation
+  -> اگر لازم باشد: superset-operation به mock-data-warehouse وصل می‌شود
+```
+
+routeهای مهم:
+
+```text
+/superset/public/                  -> Go proxy -> superset-public
+/superset/public/static/*          -> Go proxy -> superset-public
+/superset/public/api/*             -> Go proxy -> superset-operation
+/superset/public/superset/*_json*  -> Go proxy -> superset-operation
+/superset/public/superset/results* -> Go proxy -> superset-operation
+/api/superset/operation/*          -> Go proxy -> superset-operation
+```
+
+نمونه تبدیل مسیر:
+
+```text
+درخواست مرورگر:
+/superset/public/api/v1/chart/data
+
+تشخیص Go proxy:
+این مسیر data/API است.
+
+مسیر داخلی هدف:
+http://superset-operation:8088/api/superset/operation/api/v1/chart/data
+
+header ارسالی:
+Authorization: Bearer <Operation Keycloak access token>
+```
+
+### چرا Token Exchange لازم است؟
+
+در این معماری Superset عملیات نباید صرفا توکن صادرشده برای محیط عمومی را معتبر
+بداند. توکن عمومی برای login و session کاربر در Super App استفاده می‌شود. اما
+وقتی request وارد محیط عملیات می‌شود، Go proxy باید از Keycloak عملیات یک توکن
+مناسب عملیات بگیرد. این کار با Token Exchange انجام می‌شود.
+
+جریان دقیق:
+
+```text
+1. کاربر با Keycloak عمومی login می‌کند.
+2. Go backend authorization code را با access token و refresh token عمومی تعویض می‌کند.
+3. توکن‌های عمومی encrypted در MongoDB ذخیره می‌شوند.
+4. مرورگر فقط cookie داخلی BI_ENGINE_SESSION را نگه می‌دارد.
+5. وقتی کاربر UI عمومی Superset را باز می‌کند، page و static از superset-public می‌آید.
+6. وقتی همان UI درخواست API/data می‌زند، Go proxy مسیر را data تشخیص می‌دهد.
+7. Go proxy access token عمومی را از session می‌گیرد.
+8. Go proxy با Keycloak عملیات Token Exchange انجام می‌دهد.
+9. Keycloak عملیات یک access token عملیاتی برمی‌گرداند.
+10. Go proxy request را با توکن عملیات به superset-operation می‌فرستد.
+11. Superset عملیات توکن را introspect می‌کند.
+12. اگر token active باشد، کاربر داخل Superset load یا create می‌شود.
+```
+
+### توضیح خط‌به‌خط و متدبه‌متد فایل `services/super-app-backend/cmd/server/main.go`
+
+این فایل هسته backend و proxy است. در ادامه هر بخش مهم به ترتیب نقش و منطق داخلی
+توضیح داده شده است.
+
+#### importها
+
+```go
+import (
+    "context"
+    "crypto/aes"
+    "crypto/cipher"
+    "crypto/rand"
+    "crypto/sha256"
+    "encoding/base64"
+    "encoding/json"
+    "errors"
+    "io"
+    "log"
+    "net/http"
+    "net/url"
+    "os"
+    "strings"
+    "time"
+)
+```
+
+- `context`: برای timeout در ارتباط با MongoDB و عملیات‌های I/O.
+- `crypto/aes` و `crypto/cipher`: برای رمزنگاری access token و refresh token.
+- `crypto/rand`: برای تولید مقدار امن session id و OAuth state.
+- `crypto/sha256`: برای ساخت hash از session id و مشتق کردن کلید رمزنگاری.
+- `encoding/base64`: برای تبدیل داده binary به string امن در cookie و MongoDB.
+- `encoding/json`: برای decode کردن پاسخ‌های Keycloak.
+- `errors`: برای ساخت خطاهای ساده و قابل فهم.
+- `io`: برای خواندن random bytes.
+- `log`: برای توقف برنامه در خطاهای startup.
+- `net/http`: برای call به Keycloak token endpoint و userinfo.
+- `net/url`: برای ساخت payloadهای form-urlencoded.
+- `os`: برای خواندن environment variableها.
+- `strings`: برای trim، prefix check و rewrite مسیرها.
+- `time`: برای expiresAt، timeout و refresh token logic.
+
+#### struct `config`
+
+هدف: تمام تنظیمات runtime backend را در یک ساختار واحد نگه می‌دارد.
+
+- `Port`: پورتی که Fiber روی آن listen می‌کند.
+- `MongoURI`: آدرس اتصال MongoDB.
+- `MongoDatabase`: نام دیتابیس MongoDB.
+- `SessionSecret`: secret اصلی برای رمزنگاری tokenها.
+- `CookieSecure`: تعیین می‌کند cookie فقط روی HTTPS ارسال شود یا نه.
+- `BackendPublicURL`: آدرس public backend برای ساخت redirect URI.
+- `KeycloakBaseURL`: آدرس داخلی Keycloak عمومی از دید backend.
+- `KeycloakPublicURL`: آدرس browser-facing Keycloak برای redirect login.
+- `KeycloakRealm`: realm عمومی.
+- `KeycloakClientID`: client عمومی Super App.
+- `KeycloakClientSecret`: secret client عمومی.
+- `OperationKeycloakBaseURL`: آدرس داخلی Keycloak عملیات.
+- `OperationKeycloakRealm`: realm عملیات.
+- `OperationKeycloakClientID`: client محرمانه عملیات.
+- `OperationKeycloakClientSecret`: secret client عملیات.
+- `OperationTokenExchangeEnabled`: روشن/خاموش کردن Token Exchange.
+- `OperationTokenExchangeAudience`: audience توکن خروجی عملیات.
+- `OperationTokenExchangeRequestedIssuer`: issuer هدف در صورت نیاز.
+- `OperationTokenExchangeRequestedTokenType`: نوع توکن خروجی، معمولا access token.
+- `SupersetPublicURL`: آدرس داخلی Superset عمومی.
+- `SupersetOperationURL`: آدرس داخلی Superset عملیات.
+
+#### struct `session`
+
+هدف: مدل session ذخیره‌شده در MongoDB.
+
+- `ID`: مقدار hash شده session id است، نه مقدار خام cookie.
+- `UserID`: همان `sub` کاربر در Keycloak.
+- `Username`: نام کاربری قابل نمایش.
+- `Email`: ایمیل کاربر.
+- `Zone`: zone پیش‌فرض کاربر؛ در این flow معمولا `operation`.
+- `EncryptedAccessToken`: access token عمومی encrypted.
+- `EncryptedRefreshToken`: refresh token عمومی encrypted.
+- `TokenExpiresAt`: زمان انقضای access token عمومی.
+- `CreatedAt`: زمان ایجاد session.
+- `ExpiresAt`: زمان انقضای session داخلی Super App.
+
+#### struct `tokenResponse`
+
+هدف: مدل پاسخ token endpoint در Keycloak.
+
+- `AccessToken`: مقدار `access_token`.
+- `RefreshToken`: مقدار `refresh_token` اگر endpoint برگرداند.
+- `ExpiresIn`: عمر توکن بر حسب ثانیه.
+- `TokenType`: نوع توکن، معمولا `Bearer`.
+
+#### struct `userInfo`
+
+هدف: مدل پاسخ endpoint `/userinfo` در Keycloak عمومی.
+
+- `Subject`: مقدار `sub` و شناسه پایدار کاربر.
+- `PreferredUsername`: نام کاربری پیشنهادی.
+- `Email`: ایمیل کاربر.
+
+#### ثابت‌های cookie
+
+- `sessionCookieName`: نام cookie داخلی Super App یعنی `BI_ENGINE_SESSION`.
+- `stateCookieName`: نام cookie مربوط به OAuth state برای جلوگیری از CSRF.
+- `returnToCookieName`: مسیر برگشت بعد از login.
+
+#### تابع `main`
+
+هدف: bootstrap کامل backend.
+
+گام‌ها:
+
+1. `loadConfig()` همه envها را می‌خواند و config می‌سازد.
+2. یک context ده ثانیه‌ای برای اتصال اولیه MongoDB ساخته می‌شود.
+3. `mongo.Connect` اتصال MongoDB را می‌سازد.
+4. با `defer mongoClient.Disconnect` اتصال هنگام shutdown بسته می‌شود.
+5. collection مربوط به sessionها از MongoDB گرفته می‌شود.
+6. `newTokenCodec` codec رمزنگاری token را با `SESSION_SECRET` می‌سازد.
+7. یک Fiber app ساخته می‌شود.
+8. routeهای health، config، auth، proxy و session تعریف می‌شوند.
+9. در انتها `app.Listen` backend را روی port تنظیم‌شده اجرا می‌کند.
+
+#### route `GET /health`
+
+هدف: health check backend و MongoDB.
+
+گام‌ها:
+
+1. context دو ثانیه‌ای ساخته می‌شود.
+2. `mongoClient.Ping` اجرا می‌شود.
+3. اگر MongoDB پاسخ ندهد، status برابر `503` و `status=degraded` برمی‌گردد.
+4. اگر سالم باشد، `{"status":"ok"}` برمی‌گردد.
+
+#### route `GET /config`
+
+هدف: نمایش configهای non-secret برای debugging.
+
+نکته: فیلدهایی که tag `json:"-"` دارند در خروجی نمی‌آیند، مثل secretها.
+
+#### route `GET /superset/zones`
+
+هدف: معرفی zoneهای قابل استفاده به frontend.
+
+خروجی فعلی:
+
+```text
+public    -> /superset/public/
+operation -> /api/superset/operation/
+```
+
+این یعنی public برای UI و operation برای مسیر سرویس عملیاتی.
+
+#### route `GET /auth/login`
+
+هدف: شروع Authorization Code Flow با Keycloak عمومی.
+
+گام‌ها:
+
+1. با `randomString(32)` یک state امن ساخته می‌شود.
+2. state در cookie `BI_ENGINE_OAUTH_STATE` ذخیره می‌شود.
+3. اگر query string دارای `return_to` معتبر باشد، در cookie برگشت ذخیره می‌شود.
+4. payload authorize ساخته می‌شود:
+   - `client_id`
+   - `response_type=code`
+   - `scope=openid profile email`
+   - `redirect_uri`
+   - `state`
+5. browser به endpoint authorization در Keycloak عمومی redirect می‌شود.
+
+#### route `GET /auth/callback`
+
+هدف: دریافت code از Keycloak و ساخت session داخلی.
+
+گام‌ها:
+
+1. مقدار `state` query با cookie state مقایسه می‌شود.
+2. اگر state نامعتبر باشد، درخواست رد می‌شود.
+3. مقدار `code` از query خوانده می‌شود.
+4. `exchangeCode` code را به tokenهای عمومی Keycloak تبدیل می‌کند.
+5. `fetchUserInfo` اطلاعات کاربر را از Keycloak عمومی می‌گیرد.
+6. access token با `codec.encrypt` رمزنگاری می‌شود.
+7. refresh token هم با `codec.encrypt` رمزنگاری می‌شود.
+8. یک session id امن با `randomString` ساخته می‌شود.
+9. username از `preferred_username` یا در صورت نبودن از `sub` ساخته می‌شود.
+10. document مربوط به session آماده می‌شود.
+11. در MongoDB مقدار hash شده session id ذخیره می‌شود.
+12. cookie خام session id فقط در browser قرار می‌گیرد.
+13. cookieهای موقت state و return_to پاک می‌شوند.
+14. کاربر به مسیر برگشت یا `/superset-mfe/` redirect می‌شود.
+
+#### route `GET /auth/me`
+
+هدف: برگرداندن وضعیت کاربر فعلی.
+
+گام‌ها:
+
+1. `loadSession` session را از cookie و MongoDB پیدا می‌کند.
+2. اگر session معتبر نباشد، `authenticated=false` برمی‌گردد.
+3. اگر معتبر باشد، userId، username، email و expiresAt برگردانده می‌شود.
+
+#### route `POST /auth/logout`
+
+هدف: حذف session داخلی.
+
+گام‌ها:
+
+1. مقدار cookie session خوانده می‌شود.
+2. hash آن از MongoDB حذف می‌شود.
+3. cookie browser با `MaxAge=-1` پاک می‌شود.
+4. پاسخ `{"ok": true}` برمی‌گردد.
+
+#### route `ALL /superset/operation/*`
+
+هدف: ارسال مستقیم همه requestهای operation به Superset عملیات.
+
+```go
+return proxySuperset(
+    c,
+    cfg,
+    sessions,
+    codec,
+    cfg.SupersetOperationURL,
+    "/api/superset/operation",
+    "/api/superset/operation",
+    "operation",
+)
+```
+
+معنی پارامترها:
+
+- upstream برابر `superset-operation` است.
+- prefix داخلی Superset عملیات `/api/superset/operation` است.
+- prefix عمومی هم همان `/api/superset/operation` است.
+- zone برابر `operation` است، پس Token Exchange فعال می‌شود.
+
+#### route `ALL /superset/public/*`
+
+هدف: پیاده‌سازی رفتار Public به عنوان UI و Operation به عنوان service.
+
+منطق:
+
+1. wildcard مسیر public خوانده می‌شود.
+2. `isSupersetDataRequest` بررسی می‌کند مسیر data/API است یا UI/static.
+3. اگر data/API باشد، request به `superset-operation` فرستاده می‌شود.
+4. اگر UI/static باشد، request به `superset-public` فرستاده می‌شود.
+
+این route مهم‌ترین بخش معماری جدید است، چون باعث می‌شود Superset عمومی فقط
+ظاهر و asset را بدهد و requestهای سرویس‌دهی به عملیات بروند.
+
+#### route `POST /sessions`
+
+هدف: ساخت session تستی ساده برای local development قدیمی.
+
+نکته: این route flow اصلی SSO نیست و برای سناریوی واقعی نباید جایگزین login با
+Keycloak شود.
+
+#### تابع `proxySuperset`
+
+هدف: proxy مشترک برای Superset عمومی و Superset عملیات.
+
+پارامترها:
+
+- `c`: context درخواست Fiber.
+- `cfg`: تنظیمات runtime.
+- `sessions`: collection sessionها در MongoDB.
+- `codec`: ابزار encrypt/decrypt token.
+- `upstreamBaseURL`: آدرس container هدف، مثلا `http://superset-operation:8088`.
+- `upstreamPrefix`: prefix داخلی اپلیکیشن Superset هدف.
+- `publicPrefix`: prefix قابل مشاهده در browser.
+- `zone`: تعیین می‌کند request public است یا operation.
+
+منطق خط‌به‌خط:
+
+1. `bearerToken(c)` بررسی می‌کند آیا request خودش bearer token دارد یا نه.
+2. اگر token نبود، `sessionAccessToken` از session داخلی access token عمومی را می‌گیرد.
+3. اگر session مشکل داشت و zone عملیات بود، درخواست unauthorized می‌شود.
+4. اگر token وجود داشت و zone عملیات بود و Token Exchange فعال بود، `exchangeOperationAccessToken` اجرا می‌شود.
+5. خروجی Token Exchange جایگزین token عمومی می‌شود.
+6. اگر هنوز token وجود نداشته باشد و bypass فعال نباشد، درخواست با `401` رد می‌شود.
+7. اگر token وجود داشته باشد، header `Authorization` با مقدار `Bearer <token>` روی request تنظیم می‌شود.
+8. wildcard مسیر از route خوانده می‌شود.
+9. اگر مسیر اصلی با `/` تمام شده باشد، trailing slash حفظ می‌شود.
+10. target با ترکیب `upstreamBaseURL + upstreamPrefix + wildcard` ساخته می‌شود.
+11. query string اصلی به target اضافه می‌شود.
+12. header `X-BI-Engine-Proxy` برای traceability تنظیم می‌شود.
+13. `proxy.Do` request را به upstream می‌فرستد.
+14. بعد از پاسخ، `rewriteSupersetRedirect` مسیر redirectهای Superset را اصلاح می‌کند.
+
+#### تابع `isSupersetDataRequest`
+
+هدف: تشخیص اینکه request public باید به operation برود یا public.
+
+منطق خط‌به‌خط:
+
+1. wildcard trim می‌شود.
+2. مسیر به lowercase تبدیل می‌شود.
+3. اطمینان حاصل می‌شود مسیر با `/` شروع شود.
+4. لیست prefixهای data/API تعریف می‌شود.
+5. اگر مسیر با هرکدام از prefixها شروع شود، خروجی `true` است.
+6. اگر هیچ prefixی match نشود، خروجی `false` است.
+
+prefixهای فعلی:
+
+```text
+/api/
+/superset/explore_json
+/superset/results
+/superset/slice_json
+/superset/log
+/superset/csv
+/superset/excel
+/superset/sqllab
+/superset/queries
+/superset/sql_json
+/savedqueryviewapi/
+/sqllab/
+```
+
+نتیجه:
+
+- `true`: request به Superset عملیات می‌رود.
+- `false`: request به Superset عمومی می‌رود.
+
+#### struct `tokenCodec`
+
+هدف: نگهداری AEAD cipher برای encrypt و decrypt.
+
+فیلد `aead` همان cipher امن AES-GCM است.
+
+#### تابع `newTokenCodec`
+
+هدف: ساخت ابزار رمزنگاری tokenها.
+
+گام‌ها:
+
+1. اگر secret خالی باشد یا با `change-me` شروع شود، startup رد می‌شود.
+2. از secret با SHA-256 یک کلید 32 بایتی ساخته می‌شود.
+3. با آن کلید AES cipher ساخته می‌شود.
+4. از AES، حالت GCM ساخته می‌شود.
+5. codec آماده برگردانده می‌شود.
+
+#### متد `encrypt`
+
+هدف: رمزنگاری access token و refresh token قبل از ذخیره در MongoDB.
+
+گام‌ها:
+
+1. nonce با طول مورد نیاز GCM ساخته می‌شود.
+2. nonce با random امن پر می‌شود.
+3. plaintext با AES-GCM رمزنگاری می‌شود.
+4. nonce و ciphertext کنار هم قرار می‌گیرند.
+5. خروجی با base64 URL-safe به string تبدیل می‌شود.
+
+#### متد `decrypt`
+
+هدف: برگرداندن token رمزنگاری‌شده به مقدار خام برای استفاده backend.
+
+گام‌ها:
+
+1. string base64 decode می‌شود.
+2. اگر طول داده از nonce کمتر باشد، مقدار نامعتبر است.
+3. nonce از ابتدای ciphertext جدا می‌شود.
+4. payload رمزنگاری‌شده جدا می‌شود.
+5. AES-GCM داده را باز می‌کند.
+6. plaintext به string تبدیل و برگردانده می‌شود.
+
+#### تابع `randomString`
+
+هدف: تولید string امن برای session id و OAuth state.
+
+گام‌ها:
+
+1. byte array با اندازه خواسته‌شده ساخته می‌شود.
+2. با `crypto/rand` پر می‌شود.
+3. با base64 URL-safe به string تبدیل می‌شود.
+
+#### تابع `sessionIDHash`
+
+هدف: ذخیره نکردن session id خام در MongoDB.
+
+گام‌ها:
+
+1. session id خام با SHA-256 hash می‌شود.
+2. hash با base64 URL-safe به string تبدیل می‌شود.
+3. این مقدار به عنوان `_id` در MongoDB استفاده می‌شود.
+
+#### تابع `loadSession`
+
+هدف: پیدا کردن session معتبر از روی cookie.
+
+گام‌ها:
+
+1. cookie `BI_ENGINE_SESSION` خوانده می‌شود.
+2. اگر cookie خالی باشد، خطا برمی‌گردد.
+3. context دو ثانیه‌ای برای query ساخته می‌شود.
+4. مقدار cookie hash می‌شود.
+5. MongoDB دنبال document با همان `_id` و `expiresAt > now` می‌گردد.
+6. اگر پیدا شود، session برگردانده می‌شود.
+
+#### تابع `sessionAccessToken`
+
+هدف: گرفتن access token عمومی معتبر از session.
+
+گام‌ها:
+
+1. `loadSession` session را می‌خواند.
+2. اگر access token بیشتر از یک دقیقه اعتبار دارد، decrypt و برگردانده می‌شود.
+3. اگر نزدیک انقضا باشد، refresh token decrypt می‌شود.
+4. `refreshAccessToken` با Keycloak عمومی تماس می‌گیرد.
+5. access token جدید encrypt می‌شود.
+6. اگر refresh token جدید برگشته باشد، آن هم encrypt می‌شود.
+7. MongoDB با tokenهای جدید update می‌شود.
+8. access token عمومی جدید برگردانده می‌شود.
+
+نکته: این تابع هنوز توکن عمومی را برمی‌گرداند. تبدیل به توکن عملیات در
+`proxySuperset` و توسط `exchangeOperationAccessToken` انجام می‌شود.
+
+#### تابع `exchangeCode`
+
+هدف: تبدیل authorization code به tokenهای Keycloak عمومی.
+
+گام‌ها:
+
+1. `grant_type=authorization_code` تنظیم می‌شود.
+2. مقدار `code` در payload قرار می‌گیرد.
+3. `redirect_uri` دقیقاً همان redirect URI مرحله login تنظیم می‌شود.
+4. `tokenRequest` اجرا می‌شود.
+
+#### تابع `refreshAccessToken`
+
+هدف: گرفتن access token عمومی جدید با refresh token.
+
+گام‌ها:
+
+1. `grant_type=refresh_token` تنظیم می‌شود.
+2. مقدار refresh token در payload قرار می‌گیرد.
+3. `tokenRequest` اجرا می‌شود.
+
+#### تابع `tokenRequest`
+
+هدف: call مشترک به token endpoint Keycloak عمومی.
+
+گام‌ها:
+
+1. `client_id` عمومی Super App به payload اضافه می‌شود.
+2. `client_secret` عمومی اضافه می‌شود.
+3. request از نوع `POST` به token endpoint عمومی ساخته می‌شود.
+4. body به صورت `application/x-www-form-urlencoded` ارسال می‌شود.
+5. request اجرا می‌شود.
+6. response body با `defer` بسته می‌شود.
+7. اگر status code موفق نباشد، خطا برمی‌گردد.
+8. JSON response داخل `tokenResponse` decode می‌شود.
+9. اگر `access_token` خالی باشد، پاسخ نامعتبر است.
+10. token response برگردانده می‌شود.
+
+#### تابع `exchangeOperationAccessToken`
+
+هدف: اجرای Token Exchange و تبدیل توکن عمومی به توکن عملیات.
+
+گام‌ها:
+
+1. یک payload جدید از نوع `url.Values` ساخته می‌شود.
+2. `grant_type` روی مقدار استاندارد Token Exchange تنظیم می‌شود.
+3. `subject_token` برابر access token عمومی قرار می‌گیرد.
+4. `subject_token_type` برابر access token تنظیم می‌شود.
+5. اگر requested token type تنظیم شده باشد، به payload اضافه می‌شود.
+6. اگر audience تنظیم شده باشد، به payload اضافه می‌شود.
+7. اگر requested issuer تنظیم شده باشد، به payload اضافه می‌شود.
+8. `operationTokenRequest` payload را به Keycloak عملیات می‌فرستد.
+
+این تابع نقطه اصلی پیاده‌سازی نیازمندی جدید است.
+
+#### تابع `operationTokenRequest`
+
+هدف: ارسال درخواست Token Exchange به Keycloak عملیات.
+
+گام‌ها:
+
+1. `client_id` عملیات به payload اضافه می‌شود.
+2. `client_secret` عملیات به payload اضافه می‌شود.
+3. request به token endpoint realm عملیات ساخته می‌شود.
+4. header content type برابر form-urlencoded می‌شود.
+5. request اجرا می‌شود.
+6. response body بسته می‌شود.
+7. اگر status code موفق نباشد، خطا برمی‌گردد.
+8. JSON پاسخ decode می‌شود.
+9. اگر access token خالی باشد، پاسخ نامعتبر است.
+10. access token عملیات در قالب `tokenResponse` برگردانده می‌شود.
+
+#### تابع `fetchUserInfo`
+
+هدف: خواندن اطلاعات کاربر از Keycloak عمومی بعد از login.
+
+گام‌ها:
+
+1. request از نوع `GET` به endpoint `/userinfo` ساخته می‌شود.
+2. access token عمومی در header Authorization قرار می‌گیرد.
+3. request اجرا می‌شود.
+4. اگر status code موفق نباشد، خطا برمی‌گردد.
+5. JSON پاسخ در `userInfo` decode می‌شود.
+6. اگر `sub` خالی باشد، پاسخ نامعتبر است.
+7. اطلاعات کاربر برگردانده می‌شود.
+
+#### متد `keycloakRealmURL`
+
+هدف: ساخت URL داخلی realm عمومی.
+
+```text
+<KEYCLOAK_BASE_URL>/realms/<KEYCLOAK_REALM>
+```
+
+برای token، refresh و userinfo عمومی استفاده می‌شود.
+
+#### متد `operationKeycloakRealmURL`
+
+هدف: ساخت URL داخلی realm عملیات.
+
+```text
+<OPERATION_KEYCLOAK_BASE_URL>/realms/<OPERATION_KEYCLOAK_REALM>
+```
+
+برای Token Exchange استفاده می‌شود.
+
+#### متد `keycloakPublicRealmURL`
+
+هدف: ساخت URL عمومی Keycloak برای redirect مرورگر.
+
+```text
+<KEYCLOAK_PUBLIC_URL>/realms/<KEYCLOAK_REALM>
+```
+
+#### متد `redirectURI`
+
+هدف: ساخت redirect URI callback.
+
+```text
+<BACKEND_PUBLIC_URL>/auth/callback
+```
+
+این مقدار باید با client عمومی Keycloak هماهنگ باشد.
+
+#### تابع `bearerToken`
+
+هدف: استخراج token مستقیم از request.
+
+گام‌ها:
+
+1. header `Authorization` خوانده می‌شود.
+2. اگر با `Bearer ` شروع شود، token جدا و trim می‌شود.
+3. اگر header نبود، cookieهای `KC_ACCESS_TOKEN`، `KEYCLOAK_ACCESS_TOKEN` و `access_token` بررسی می‌شوند.
+4. اگر چیزی پیدا نشود، string خالی برمی‌گردد.
+
+در flow اصلی، معمولاً token از session داخلی خوانده می‌شود نه از مرورگر.
+
+#### تابع `safeReturnTo`
+
+هدف: جلوگیری از open redirect.
+
+گام‌ها:
+
+1. مقدار ورودی trim می‌شود.
+2. مقدار خالی رد می‌شود.
+3. مسیرهایی که با `/` شروع نمی‌شوند رد می‌شوند.
+4. مسیرهایی که با `//` شروع می‌شوند رد می‌شوند.
+5. مقدارهای دارای `://` رد می‌شوند.
+6. فقط مسیرهای داخلی مثل `/superset-mfe/` پذیرفته می‌شوند.
+
+#### تابع `rewriteSupersetRedirect`
+
+هدف: اصلاح redirectهای Superset تا کاربر از مسیر proxy خارج نشود.
+
+گام‌ها:
+
+1. header `Location` از پاسخ Superset خوانده می‌شود.
+2. اگر Location خالی باشد، کاری انجام نمی‌شود.
+3. upstream، upstreamPath و public prefix trim می‌شوند.
+4. اگر Location با آدرس داخلی upstream شروع شود، آدرس داخلی حذف می‌شود.
+5. اگر redirectPath شامل upstreamPrefix باشد، آن prefix حذف می‌شود.
+6. Location جدید با publicPrefix ساخته می‌شود.
+7. اگر Location از قبل با upstreamPrefix شروع شده باشد، با publicPrefix جایگزین می‌شود.
+8. اگر Location نسبی باشد، publicPrefix به ابتدای آن اضافه می‌شود.
+9. اگر Location absolute path باشد ولی publicPrefix نداشته باشد، publicPrefix اضافه می‌شود.
+
+#### تابع `loadConfig`
+
+هدف: ساخت config از environment variableها.
+
+گام‌ها:
+
+1. نوع requested token پیش‌فرض برای Token Exchange خوانده می‌شود.
+2. مقدار port خوانده می‌شود.
+3. تنظیمات MongoDB خوانده می‌شوند.
+4. secret و تنظیمات cookie خوانده می‌شوند.
+5. URLهای عمومی و داخلی Keycloak عمومی خوانده می‌شوند.
+6. تنظیمات Keycloak عملیات خوانده می‌شوند.
+7. اگر env عملیات خالی باشد، در local به env عمومی fallback می‌کند.
+8. flag فعال بودن Token Exchange به bool تبدیل می‌شود.
+9. URLهای داخلی Superset عمومی و عملیات خوانده می‌شوند.
+
+نکته production: envهای عملیات باید جدا، صریح و غیرپیش‌فرض باشند.
+
+#### تابع `env`
+
+هدف: خواندن env با fallback.
+
+گام‌ها:
+
+1. `os.Getenv` مقدار env را می‌خواند.
+2. اگر مقدار خالی باشد، fallback برگردانده می‌شود.
+3. اگر مقدار وجود داشته باشد، همان مقدار برگردانده می‌شود.
+
+### توضیح فایل `infra/superset/operation/keycloak_proxy_security_manager.py`
+
+این فایل در Superset عمومی و عملیات mount شده، اما نقش حیاتی آن در Superset
+عملیات است. این security manager به Superset می‌گوید requestهایی که از Go proxy
+با bearer token می‌آیند چطور به user داخلی Superset تبدیل شوند.
+
+#### importها
+
+- `json`: decode کردن پاسخ introspection.
+- `os`: خواندن envها.
+- `urllib.parse`: ساخت payload form-urlencoded.
+- `urllib.request`: ارسال HTTP request به Keycloak.
+- `Any` و `Optional`: type hint.
+- `Request`: type مربوط به Flask request.
+- `SupersetSecurityManager`: کلاس پایه security در Superset.
+
+#### کلاس `KeycloakProxySecurityManager`
+
+هدف: جایگزین کردن منطق auth پیش‌فرض Superset برای requestهای proxy شده.
+
+#### متد `request_loader`
+
+هدف: تشخیص کاربر Superset از روی bearer token.
+
+گام‌ها:
+
+1. `_bearer_token` token را از header می‌خواند.
+2. اگر token نباشد، `None` برمی‌گردد.
+3. `_introspect` توکن را از Keycloak عملیات اعتبارسنجی می‌کند.
+4. اگر پاسخ خالی باشد یا `active=true` نباشد، `None` برمی‌گردد.
+5. username از `preferred_username` یا `username` یا `sub` انتخاب می‌شود.
+6. اگر username وجود نداشته باشد، request لاگین نمی‌شود.
+7. email از claim `email` یا fallback محلی ساخته می‌شود.
+8. first name از `given_name` یا username گرفته می‌شود.
+9. last name از `family_name` یا string خالی گرفته می‌شود.
+10. role با `_role_name` تعیین می‌شود.
+11. اگر user قبلاً در Superset وجود داشته باشد، همان user برگردانده می‌شود.
+12. اگر user وجود نداشته باشد، با `add_user` ساخته و برگردانده می‌شود.
+
+#### متد `_bearer_token`
+
+هدف: استخراج bearer token از header.
+
+گام‌ها:
+
+1. header `Authorization` خوانده می‌شود.
+2. اگر با `bearer ` شروع شود، قسمت بعد از آن جدا می‌شود.
+3. اگر معتبر نباشد، string خالی برمی‌گردد.
+
+#### متد `_introspection_url`
+
+هدف: ساخت endpoint introspection.
+
+گام‌ها:
+
+1. اگر `KEYCLOAK_INTROSPECTION_URL` تنظیم شده باشد، همان استفاده می‌شود.
+2. در غیر این صورت `KEYCLOAK_BASE_URL` خوانده می‌شود.
+3. `KEYCLOAK_REALM` خوانده می‌شود.
+4. URL نهایی ساخته می‌شود:
+
+```text
+<KEYCLOAK_BASE_URL>/realms/<KEYCLOAK_REALM>/protocol/openid-connect/token/introspect
+```
+
+در container عملیات، این envها به Keycloak عملیات اشاره می‌کنند.
+
+#### متد `_introspect`
+
+هدف: اعتبارسنجی token با Keycloak عملیات.
+
+گام‌ها:
+
+1. client id از env خوانده می‌شود.
+2. client secret از env خوانده می‌شود.
+3. payload شامل `token`، `client_id` و `client_secret` ساخته می‌شود.
+4. request از نوع `POST` به introspection endpoint ساخته می‌شود.
+5. content type برابر `application/x-www-form-urlencoded` است.
+6. request با timeout پنج ثانیه اجرا می‌شود.
+7. پاسخ JSON decode و برگردانده می‌شود.
+8. اگر هر خطایی رخ دهد، `None` برمی‌گردد.
+
+#### متد `_role_name`
+
+هدف: mapping کردن roleهای Keycloak به roleهای Superset.
+
+گام‌ها:
+
+1. roleهای `realm_access.roles` خوانده می‌شوند.
+2. roleهای client-level داخل `resource_access` هم جمع می‌شوند.
+3. env `SUPERSET_KEYCLOAK_ADMIN_ROLES` خوانده و split می‌شود.
+4. اگر roleهای کاربر با admin roleها اشتراک داشته باشد، role برابر `Admin` می‌شود.
+5. در غیر این صورت مقدار `SUPERSET_KEYCLOAK_DEFAULT_ROLE` برگردانده می‌شود.
+6. پیش‌فرض role در عملیات `Alpha` است.
+
+### توضیح فایل `infra/superset/operation/provision_operation_dwh.py`
+
+هدف این فایل ثبت خودکار اتصال DWH تستی در Superset عملیات هنگام startup است.
+
+گام‌ها:
+
+1. `os` برای خواندن env import می‌شود.
+2. `db` از Superset برای کار با metadata database import می‌شود.
+3. `create_app` برای ساخت context اپلیکیشن Superset import می‌شود.
+4. `Database` مدل connection دیتابیس‌های Superset است.
+5. `database_name` از env `SUPERSET_OPERATION_DWH_DATABASE_NAME` خوانده می‌شود.
+6. اگر env نبود، نام `Mock Data Warehouse` استفاده می‌شود.
+7. `database_uri` از env `SUPERSET_OPERATION_DWH_SQLALCHEMY_URI` خوانده می‌شود.
+8. اگر env نبود، URI مربوط به `mock-data-warehouse` استفاده می‌شود.
+9. app Superset ساخته می‌شود.
+10. داخل `app.app_context` عملیات metadata انجام می‌شود.
+11. دیتابیس با همان نام جستجو می‌شود.
+12. اگر وجود نداشته باشد، یک `Database` جدید ساخته و به session اضافه می‌شود.
+13. URI اتصال با `set_sqlalchemy_uri` تنظیم می‌شود.
+14. `expose_in_sqllab=True` باعث می‌شود در SQL Lab قابل استفاده باشد.
+15. `allow_run_async=False` اجرای async را برای این POC خاموش نگه می‌دارد.
+16. تغییرات commit می‌شوند.
+17. پیام موفقیت در log چاپ می‌شود.
+
+### توضیح تنظیمات Superset عمومی و عملیات
+
+#### `infra/superset/public/superset_config.py`
+
+هدف: تنظیم Superset عمومی به عنوان سطح نمایش.
+
+نکات مهم:
+
+- `APPLICATION_ROOT="/superset/public"` یعنی Superset عمومی پشت این prefix اجرا می‌شود.
+- `APP_NAME="BI Engine Public Zone"` نام UI عمومی است.
+- `PUBLIC_ROLE_LIKE="Gamma"` نقش public را محدود نگه می‌دارد.
+- `AUTH_USER_REGISTRATION_ROLE` به طور پیش‌فرض `Gamma` است.
+- `CUSTOM_SECURITY_MANAGER` فعال است تا requestهای proxy شده بتوانند کاربر را تشخیص دهند.
+- این محیط نباید مرجع اجرای data/API باشد؛ Go proxy درخواست‌های data را از آن جدا می‌کند.
+
+#### `infra/superset/operation/superset_config.py`
+
+هدف: تنظیم Superset عملیات به عنوان سرویس اصلی BI.
+
+نکات مهم:
+
+- `APPLICATION_ROOT="/api/superset/operation"` یعنی operation پشت مسیر API اجرا می‌شود.
+- `CUSTOM_SECURITY_MANAGER=KeycloakProxySecurityManager` یعنی auth از bearer token ارسالی proxy می‌آید.
+- `AUTH_USER_REGISTRATION=True` اجازه می‌دهد user معتبر Keycloak به صورت خودکار در Superset ساخته شود.
+- role پیش‌فرض عملیات `Alpha` است.
+- `APP_NAME="BI Engine Operation Zone"` نام محیط عملیات است.
+
+### توضیح تغییرات `docker-compose.yml`
+
+سرویس `super-app-backend`:
+
+- envهای Keycloak عمومی را برای login، userinfo و refresh token می‌گیرد.
+- envهای `OPERATION_KEYCLOAK_*` را برای Token Exchange می‌گیرد.
+- `SUPERSET_PUBLIC_URL` به `superset-public:8088` اشاره می‌کند.
+- `SUPERSET_OPERATION_URL` به `superset-operation:8088` اشاره می‌کند.
+
+سرویس `keycloak`:
+
+- با `--features=token-exchange` اجرا می‌شود.
+- realm local را import می‌کند.
+- از PostgreSQL داخلی `keycloak-db` استفاده می‌کند تا state محلی پایدارتر باشد.
+
+سرویس `superset-public`:
+
+- از image ساخته‌شده از fork محلی Superset استفاده می‌کند.
+- `SUPERSET_APP_ROOT` آن `/superset/public` است.
+- config عمومی را mount می‌کند.
+
+سرویس `superset-operation`:
+
+- از همان image محلی Superset استفاده می‌کند.
+- `SUPERSET_APP_ROOT` آن `/api/superset/operation` است.
+- security manager عملیات را mount می‌کند.
+- `provision_operation_dwh.py` را هنگام startup اجرا می‌کند.
+- به `mock-data-warehouse` وابسته است.
+
+سرویس `mock-data-warehouse`:
+
+- یک PostgreSQL تستی داخلی است.
+- به host expose نشده است.
+- seed SQLهای داخل `infra/mock-data-warehouse/init/` را اجرا می‌کند.
+- فقط containerهای داخل network می‌توانند به آن وصل شوند.
+
+### توضیح envهای ضروری
+
+```text
+KEYCLOAK_BASE_URL=http://keycloak:8080
+KEYCLOAK_PUBLIC_URL=http://localhost:8081
+KEYCLOAK_REALM=bi-engine
+KEYCLOAK_CLIENT_ID=super-app
+KEYCLOAK_CLIENT_SECRET=local-dev-secret
+```
+
+این‌ها برای login و session عمومی Super App هستند.
+
+```text
+OPERATION_KEYCLOAK_BASE_URL=http://keycloak:8080
+OPERATION_KEYCLOAK_REALM=bi-engine
+OPERATION_KEYCLOAK_CLIENT_ID=superset-operation
+OPERATION_KEYCLOAK_CLIENT_SECRET=local-dev-operation-secret
+OPERATION_KEYCLOAK_TOKEN_EXCHANGE_ENABLED=true
+OPERATION_KEYCLOAK_TOKEN_EXCHANGE_AUDIENCE=superset-operation
+OPERATION_KEYCLOAK_TOKEN_EXCHANGE_REQUESTED_TOKEN_TYPE=urn:ietf:params:oauth:token-type:access_token
+```
+
+این‌ها برای Token Exchange و اعتبارسنجی عملیات هستند.
+
+```text
+SUPERSET_OPERATION_DWH_DATABASE_NAME=Mock Data Warehouse
+SUPERSET_OPERATION_DWH_SQLALCHEMY_URI=postgresql+psycopg2://bi_user:bi_password@mock-data-warehouse:5432/bi_warehouse
+```
+
+این‌ها اتصال DWH تستی را در Superset عملیات ثبت می‌کنند.
+
+### جمع‌بندی فنی
+
+در وضعیت فعلی، پیاده‌سازی با معماری مورد نظر هماهنگ شده است:
+
+- Superset عمومی برای UI و asset استفاده می‌شود.
+- Superset عملیات برای API، JSON، data، query و DWH استفاده می‌شود.
+- Go proxy تصمیم می‌گیرد هر request public به کدام Superset برود.
+- برای operation، Token Exchange انجام می‌شود.
+- Superset عملیات توکن را با introspection در Keycloak عملیات معتبر می‌بیند.
+- DWH تستی فقط در Superset عملیات provision می‌شود.
+
+نکته مهم: چون Superset خودش یک اپلیکیشن Flask + React است، `superset-public` در
+این POC یک container کامل Superset باقی مانده است. اما از نظر مسیر‌دهی و مسئولیت
+معماری، با آن مثل frontend/UI رفتار شده و سرویس‌دهی داده‌ای به `superset-operation`
+منتقل شده است.
