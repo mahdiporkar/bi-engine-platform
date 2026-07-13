@@ -113,6 +113,18 @@ Connection details:
 - Password: `bi_password`
 - SQLAlchemy URI: `postgresql+psycopg2://bi_user:bi_password@mock-data-warehouse:5432/bi_warehouse`
 
+Connection string کامل DWH تستی:
+
+```text
+postgresql+psycopg2://bi_user:bi_password@mock-data-warehouse:5432/bi_warehouse
+```
+
+این connection string داخل شبکه Docker معتبر است؛ یعنی containerهایی مثل
+`superset-operation` می‌توانند با hostname داخلی `mock-data-warehouse` به آن وصل
+شوند. این سرویس به صورت پیش‌فرض روی host expose نشده است، پس از بیرون Docker با
+`localhost:5432` در دسترس نیست مگر اینکه در `docker-compose.yml` برای آن port
+mapping اضافه شود.
+
 Seed SQL files live in `infra/mock-data-warehouse/init/` and create:
 
 - `sales_orders`
@@ -2354,6 +2366,22 @@ SUPERSET_OPERATION_DWH_SQLALCHEMY_URI=postgresql+psycopg2://bi_user:bi_password@
 ```
 
 این‌ها اتصال DWH تستی را در Superset عملیات ثبت می‌کنند.
+
+جزئیات connection string تستی DWH:
+
+```text
+Host: mock-data-warehouse
+Port: 5432
+Database: bi_warehouse
+Username: bi_user
+Password: bi_password
+SQLAlchemy URI: postgresql+psycopg2://bi_user:bi_password@mock-data-warehouse:5432/bi_warehouse
+```
+
+این آدرس مخصوص ارتباط داخلی containerها در Docker network است. بنابراین
+`superset-operation` همین آدرس را استفاده می‌کند، اما ابزارهای روی سیستم host
+مستقیماً نمی‌توانند با `localhost:5432` به آن وصل شوند مگر اینکه پورت PostgreSQL
+DWH در compose publish شود.
 
 ### جمع‌بندی فنی
 
