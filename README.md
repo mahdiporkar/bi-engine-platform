@@ -122,7 +122,22 @@ The sample data supports basic Superset charts for sales by province, monthly sa
 trends, top product categories, order status distribution, and customer segment
 analysis.
 
-To add the connection manually in the Superset Operation Zone:
+The `superset-operation` service provisions this connection automatically during
+startup with Superset's `set-database-uri` CLI:
+
+```text
+Database name: Mock Data Warehouse
+SQLAlchemy URI: postgresql+psycopg2://bi_user:bi_password@mock-data-warehouse:5432/bi_warehouse
+```
+
+The connection is controlled by:
+
+```text
+SUPERSET_OPERATION_DWH_DATABASE_NAME
+SUPERSET_OPERATION_DWH_SQLALCHEMY_URI
+```
+
+If you need to add or verify it manually in the Superset Operation Zone:
 
 1. Open http://localhost:8080/api/superset/operation/ after logging in through the Super App.
 2. Sign in with the local Superset admin user from `.env`.
@@ -464,7 +479,7 @@ Exchange در Go proxy انجام می‌شود و Superset Operation فقط ت�
 - ساخت session داخلی Super App و ارسال cookie امن به مرورگر.
 - refresh کردن توکن عمومی در صورت نزدیک شدن به انقضا.
 - اجرای Token Exchange با Keycloak عملیات قبل از ورود به Superset Operation.
-- proxy کردن requestهای Superset Public و Superset Operation.
+- proxy کردن requestهای مسیر Public و Operation به سرویس واقعی Superset Operation.
 - بازنویسی redirectهای Superset تا کاربر از مسیر proxy خارج نشود.
 
 #### importها در `main.go`
@@ -542,8 +557,8 @@ import (
 - `OperationTokenExchangeAudience`: مقدار audience مورد انتظار در توکن عملیات.
 - `OperationTokenExchangeRequestedIssuer`: issuer هدف در سناریوهای چند issuer.
 - `OperationTokenExchangeRequestedTokenType`: نوع توکن خروجی؛ پیش‌فرض access token است.
-- `SupersetPublicURL`: آدرس upstream برای Superset عمومی.
-- `SupersetOperationURL`: آدرس upstream برای Superset عملیات.
+- `SupersetPublicURL`: آدرس Superset عمومی برای سناریوهای نمایش/کانفیگ؛ در معماری فعلی مسیر `/superset/public/*` برای سرویس‌دهی عملیاتی از این upstream استفاده نمی‌کند.
+- `SupersetOperationURL`: آدرس upstream واقعی Superset عملیات که requestهای Operation و requestهای سرویس‌دهی‌شده از مسیر Public به آن forward می‌شوند.
 
 نکته امنیتی: فیلدهایی مثل `MongoURI`، `SessionSecret` و client secretها نباید از
 endpoint `/config` به frontend بروند. به همین دلیل `json:"-"` دارند.
@@ -653,7 +668,7 @@ const (
 
 خروجی:
 
-- zone عمومی با آدرس `cfg.SupersetPublicURL`.
+- zone عمومی با مسیر نمایشی `/superset/public/`.
 - zone عملیات با مسیر proxy داخلی `/api/superset/operation/`.
 
 نکته: برای Operation، frontend نباید مستقیم به Superset وصل شود؛ باید از مسیر Go
@@ -751,13 +766,22 @@ Operation و داخل `proxySuperset` ساخته می‌شود.
 
 #### route `ALL /superset/public/*`
 
-هدف: proxy کردن Superset Public.
+هدف: نگه داشتن مسیر بیرونی Public، اما ارسال request به Superset Operation.
 
-تفاوت با Operation:
+در معماری فعلی Superset Public فقط نقش نمایش دارد و مرجع سرویس‌دهی قابل اعتماد
+نیست. به همین دلیل route بیرونی `/superset/public/*` در Go proxy به upstream
+عملیاتی وصل می‌شود:
 
-- `zone` برابر `public` است.
-- Token Exchange عملیات انجام نمی‌شود.
-- بسته به تنظیمات، توکن bearer یا session token می‌تواند forward شود.
+```text
+/superset/public/* -> Go proxy -> /api/superset/operation/* -> superset-operation:8088
+```
+
+رفتار این route از نظر امنیتی مثل Operation است:
+
+- `zone` برابر `operation` ارسال می‌شود.
+- Token Exchange با Keycloak عملیات انجام می‌شود.
+- توکن عمومی مستقیما به Superset داده نمی‌شود.
+- header نهایی برای Superset Operation شامل `Authorization: Bearer <operation token>` است.
 
 #### route `POST /sessions`
 
@@ -784,8 +808,9 @@ Operation و داخل `proxySuperset` ساخته می‌شود.
 - `sessions`: collection مربوط به sessionها در MongoDB.
 - `codec`: ابزار decrypt/encrypt توکن‌ها.
 - `upstreamBaseURL`: آدرس container یا upstream Superset.
-- `publicPrefix`: prefix عمومی مسیر proxy.
-- `zone`: مشخص می‌کند public است یا operation.
+- `upstreamPrefix`: prefix واقعی داخل Superset upstream.
+- `publicPrefix`: prefix بیرونی که کاربر در مرورگر می‌بیند.
+- `zone`: مشخص می‌کند request باید با سیاست امنیتی Operation پردازش شود یا نه.
 
 منطق خط‌به‌خط:
 
@@ -805,11 +830,11 @@ Authorization: Bearer <token>
 
 10. `wildcard := c.Params("*")` بخش dynamic مسیر را می‌خواند.
 11. اگر مسیر با slash تمام شده باشد، slash حفظ می‌شود تا Superset redirect اشتباه نسازد.
-12. `target` با ترکیب upstream، prefix و wildcard ساخته می‌شود.
+12. `target` با ترکیب `upstreamBaseURL`، `upstreamPrefix` و `wildcard` ساخته می‌شود؛ بنابراین ممکن است مسیر بیرونی `/superset/public/*` باشد اما مسیر واقعی upstream برابر `/api/superset/operation/*` شود.
 13. query string اصلی request به target اضافه می‌شود.
 14. header `X-BI-Engine-Proxy` برای trace/debug تنظیم می‌شود.
 15. `proxy.Do(c, target)` request را به Superset forward می‌کند.
-16. `rewriteSupersetRedirect` بعد از پاسخ، headerهای redirect را اصلاح می‌کند.
+16. `rewriteSupersetRedirect` بعد از پاسخ، headerهای redirect را از prefix واقعی upstream به prefix بیرونی مرورگر تبدیل می‌کند.
 17. اگر همه چیز موفق باشد، پاسخ Superset به مرورگر برمی‌گردد.
 
 نکته کلیدی: در Operation، Superset هیچ وقت توکن عمومی را دریافت نمی‌کند؛ اگر
@@ -1305,5 +1330,17 @@ The POC runs two Superset containers from locally built images:
 
 - `superset-public` uses `infra/superset/public/superset_config.py`
 - `superset-operation` uses `infra/superset/operation/superset_config.py`
+
+In this architecture, `superset-public` is treated as the public/display-side
+Superset surface. It is not the trusted service authority for operational
+requests. Browser-facing requests under `/superset/public/*` still go through
+the Go proxy, but the Go proxy forwards them to `superset-operation` by mapping:
+
+```text
+/superset/public/* -> super-app-backend -> /api/superset/operation/* -> superset-operation:8088
+```
+
+`superset-operation` is the service-side Superset instance. It owns operational
+authentication, token introspection, DWH connectivity, and service execution.
 
 Both configs are integration-time settings only. Superset code patches, map changes, Oracle drivers, OAuth changes, and image build logic remain in the Superset fork.

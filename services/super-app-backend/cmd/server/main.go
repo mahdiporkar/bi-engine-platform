@@ -124,7 +124,7 @@ func main() {
 	app.Get("/superset/zones", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"zones": []fiber.Map{
-				{"name": "public", "url": cfg.SupersetPublicURL},
+				{"name": "public", "url": "/superset/public/"},
 				{"name": "operation", "url": "/api/superset/operation/"},
 			},
 		})
@@ -290,11 +290,11 @@ func main() {
 	})
 
 	app.All("/superset/operation/*", func(c *fiber.Ctx) error {
-		return proxySuperset(c, cfg, sessions, codec, cfg.SupersetOperationURL, "/api/superset/operation", "operation")
+		return proxySuperset(c, cfg, sessions, codec, cfg.SupersetOperationURL, "/api/superset/operation", "/api/superset/operation", "operation")
 	})
 
 	app.All("/superset/public/*", func(c *fiber.Ctx) error {
-		return proxySuperset(c, cfg, sessions, codec, cfg.SupersetPublicURL, "/superset/public", "public")
+		return proxySuperset(c, cfg, sessions, codec, cfg.SupersetOperationURL, "/api/superset/operation", "/superset/public", "operation")
 	})
 
 	app.Post("/sessions", func(c *fiber.Ctx) error {
@@ -340,7 +340,7 @@ func main() {
 	log.Fatal(app.Listen(":" + cfg.Port))
 }
 
-func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *tokenCodec, upstreamBaseURL string, publicPrefix string, zone string) error {
+func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *tokenCodec, upstreamBaseURL string, upstreamPrefix string, publicPrefix string, zone string) error {
 	token := bearerToken(c)
 	if token == "" {
 		sessionToken, err := sessionAccessToken(c, cfg, sessions, codec)
@@ -373,7 +373,7 @@ func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *
 	if strings.HasSuffix(c.Path(), "/") && wildcard != "" && !strings.HasSuffix(wildcard, "/") {
 		wildcard += "/"
 	}
-	target := strings.TrimRight(upstreamBaseURL, "/") + strings.TrimRight(publicPrefix, "/") + "/" + wildcard
+	target := strings.TrimRight(upstreamBaseURL, "/") + strings.TrimRight(upstreamPrefix, "/") + "/" + wildcard
 	if query := string(c.Request().URI().QueryString()); query != "" {
 		target += "?" + query
 	}
@@ -382,7 +382,7 @@ func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *
 	if err := proxy.Do(c, target); err != nil {
 		return err
 	}
-	rewriteSupersetRedirect(c, upstreamBaseURL, publicPrefix)
+	rewriteSupersetRedirect(c, upstreamBaseURL, upstreamPrefix, publicPrefix)
 	return nil
 }
 
@@ -666,7 +666,7 @@ func safeReturnTo(value string) string {
 	return value
 }
 
-func rewriteSupersetRedirect(c *fiber.Ctx, upstreamBaseURL string, publicPrefix string) {
+func rewriteSupersetRedirect(c *fiber.Ctx, upstreamBaseURL string, upstreamPrefix string, publicPrefix string) {
 	location := c.Response().Header.Peek(fiber.HeaderLocation)
 	if len(location) == 0 {
 		return
@@ -674,10 +674,19 @@ func rewriteSupersetRedirect(c *fiber.Ctx, upstreamBaseURL string, publicPrefix 
 
 	value := string(location)
 	upstream := strings.TrimRight(upstreamBaseURL, "/")
+	upstreamPath := strings.TrimRight(upstreamPrefix, "/")
 	prefix := strings.TrimRight(publicPrefix, "/")
 
 	if strings.HasPrefix(value, upstream+"/") {
-		c.Response().Header.Set(fiber.HeaderLocation, prefix+strings.TrimPrefix(value, upstream))
+		redirectPath := strings.TrimPrefix(value, upstream)
+		if strings.HasPrefix(redirectPath, upstreamPath+"/") || redirectPath == upstreamPath {
+			redirectPath = strings.TrimPrefix(redirectPath, upstreamPath)
+		}
+		c.Response().Header.Set(fiber.HeaderLocation, prefix+redirectPath)
+		return
+	}
+	if strings.HasPrefix(value, upstreamPath+"/") || value == upstreamPath {
+		c.Response().Header.Set(fiber.HeaderLocation, prefix+strings.TrimPrefix(value, upstreamPath))
 		return
 	}
 	if !strings.HasPrefix(value, "/") && !strings.Contains(value, "://") {

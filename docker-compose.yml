@@ -184,6 +184,13 @@ services:
 
   superset-operation:
     image: ${SUPERSET_IMAGE:-bi-engine-superset:local-source}
+    build:
+      context: "${SUPERSET_SOURCE_DIR:-E:\\Project\\superset}"
+      dockerfile: Dockerfile
+      target: dev
+      args:
+        DEV_MODE: "false"
+        NPM_BUILD_CMD: build-dev
     depends_on:
       - mock-data-warehouse
       - superset-operation-db
@@ -192,6 +199,7 @@ services:
       /bin/sh -c "superset db upgrade &&
       superset fab create-admin --username $$SUPERSET_ADMIN_USERNAME --firstname BI --lastname Admin --email $$SUPERSET_ADMIN_EMAIL --password $$SUPERSET_ADMIN_PASSWORD || true &&
       superset init &&
+      superset set-database-uri -d \"$$SUPERSET_OPERATION_DWH_DATABASE_NAME\" -u \"$$SUPERSET_OPERATION_DWH_SQLALCHEMY_URI\" &&
       superset run -h 0.0.0.0 -p 8088"
     environment:
       SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
@@ -200,6 +208,8 @@ services:
       SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
       SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
       SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@example.local}
+      SUPERSET_OPERATION_DWH_DATABASE_NAME: ${SUPERSET_OPERATION_DWH_DATABASE_NAME:-Mock Data Warehouse}
+      SUPERSET_OPERATION_DWH_SQLALCHEMY_URI: ${SUPERSET_OPERATION_DWH_SQLALCHEMY_URI:-postgresql+psycopg2://bi_user:bi_password@mock-data-warehouse:5432/bi_warehouse}
       SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://superset:superset@superset-operation-db:5432/superset
       REDIS_HOST: superset-redis
       PUBLIC_BASE_URL: http://localhost:${NGINX_PORT:-8080}/superset/operation
