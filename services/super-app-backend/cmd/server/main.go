@@ -80,6 +80,9 @@ const (
 	returnToCookieName = "BI_ENGINE_RETURN_TO"
 )
 
+// main نقطه شروع Go proxy است.
+// این تابع تنظیمات را می‌خواند، به MongoDB وصل می‌شود، رمزنگاری توکن‌ها را آماده می‌کند
+// و تمام routeهای اصلی احراز هویت، session، health check و proxy بین Public و Operation را ثبت می‌کند.
 func main() {
 	cfg := loadConfig()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -125,7 +128,7 @@ func main() {
 		return c.JSON(fiber.Map{
 			"zones": []fiber.Map{
 				{"name": "public", "url": "/superset/public/"},
-				{"name": "operation", "url": "/api/superset/operation/"},
+				{"name": "operation", "url": "/api/superset/operation/api/"},
 			},
 		})
 	})
@@ -290,6 +293,11 @@ func main() {
 	})
 
 	app.All("/superset/operation/*", func(c *fiber.Ctx) error {
+		if !isSupersetServiceRequest(c.Params("*")) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error": "operation Superset is service-only; use /superset/public/ for UI",
+			})
+		}
 		return proxySuperset(c, cfg, sessions, codec, cfg.SupersetOperationURL, "/api/superset/operation", "/api/superset/operation", "operation")
 	})
 
@@ -343,6 +351,9 @@ func main() {
 	log.Fatal(app.Listen(":" + cfg.Port))
 }
 
+// proxySuperset هسته اصلی ارسال requestهای Superset است.
+// این تابع token را از request یا session داخلی پیدا می‌کند، برای zone عملیات Token Exchange انجام می‌دهد،
+// header Authorization را روی request می‌گذارد، target واقعی Superset را می‌سازد و response/redirect را اصلاح می‌کند.
 func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *tokenCodec, upstreamBaseURL string, upstreamPrefix string, publicPrefix string, zone string) error {
 	token := bearerToken(c)
 	tokenSource := "request"
@@ -406,9 +417,13 @@ func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *
 	return nil
 }
 
+// isSupersetServiceRequest تشخیص می‌دهد یک مسیر Superset از جنس service/API/data است یا UI/asset.
+// اگر خروجی true باشد request باید به Superset Operation برود؛ اگر false باشد مسیر برای Superset Public باقی می‌ماند.
+// این تابع مرز معماری Public UI و Operation API را در Go proxy enforce می‌کند.
 func isSupersetServiceRequest(wildcard string) bool {
 	path := "/" + strings.TrimLeft(strings.ToLower(strings.TrimSpace(wildcard)), "/")
 	servicePrefixes := []string{
+		"/api",
 		"/api/",
 		"/superset/explore_json",
 		"/superset/results",
@@ -430,6 +445,8 @@ func isSupersetServiceRequest(wildcard string) bool {
 	return false
 }
 
+// tokenFingerprint برای لاگ‌گیری امن از token استفاده می‌شود.
+// این تابع هیچ‌وقت token خام را چاپ نمی‌کند و فقط یک hash کوتاه می‌سازد تا بتوان requestها را trace کرد.
 func tokenFingerprint(token string) string {
 	if token == "" {
 		return "none"
@@ -442,6 +459,9 @@ type tokenCodec struct {
 	aead cipher.AEAD
 }
 
+// newTokenCodec ابزار رمزنگاری tokenها را از روی secret محیطی می‌سازد.
+// هدف این است که access token و refresh token قبل از ذخیره در MongoDB با AES-GCM رمزنگاری شوند.
+// اگر secret خالی یا مقدار پیش‌فرض ناامن باشد، backend عمدا start نمی‌شود.
 func newTokenCodec(secret string) (*tokenCodec, error) {
 	if secret == "" || strings.HasPrefix(secret, "change-me") {
 		return nil, errors.New("SESSION_SECRET must be set to a strong non-default value")
@@ -458,6 +478,8 @@ func newTokenCodec(secret string) (*tokenCodec, error) {
 	return &tokenCodec{aead: aead}, nil
 }
 
+// encrypt یک مقدار حساس مثل access token یا refresh token را رمزنگاری می‌کند.
+// برای هر مقدار یک nonce تصادفی ساخته می‌شود و خروجی به صورت base64 URL-safe ذخیره می‌شود.
 func (codec *tokenCodec) encrypt(value string) (string, error) {
 	nonce := make([]byte, codec.aead.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
@@ -467,6 +489,8 @@ func (codec *tokenCodec) encrypt(value string) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(ciphertext), nil
 }
 
+// decrypt مقدار رمزنگاری‌شده ذخیره‌شده در MongoDB را به متن اصلی تبدیل می‌کند.
+// این تابع هنگام خواندن token از session استفاده می‌شود تا Go proxy بتواند token معتبر را refresh یا exchange کند.
 func (codec *tokenCodec) decrypt(value string) (string, error) {
 	ciphertext, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
@@ -484,6 +508,8 @@ func (codec *tokenCodec) decrypt(value string) (string, error) {
 	return string(plaintext), nil
 }
 
+// randomString رشته تصادفی امن می‌سازد.
+// از این تابع برای state در OAuth و session id مرورگر استفاده می‌شود تا مقدارها قابل حدس زدن نباشند.
 func randomString(size int) (string, error) {
 	buffer := make([]byte, size)
 	if _, err := io.ReadFull(rand.Reader, buffer); err != nil {
@@ -492,11 +518,15 @@ func randomString(size int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buffer), nil
 }
 
+// sessionIDHash مقدار خام session id مرورگر را hash می‌کند.
+// MongoDB فقط این hash را نگه می‌دارد، بنابراین در صورت leak شدن DB مقدار cookie واقعی افشا نمی‌شود.
 func sessionIDHash(sessionID string) string {
 	hash := sha256.Sum256([]byte(sessionID))
 	return base64.RawURLEncoding.EncodeToString(hash[:])
 }
 
+// loadSession session داخلی Super App را از روی cookie پیدا می‌کند.
+// این تابع فقط sessionهایی را معتبر می‌داند که hash آن‌ها در MongoDB وجود داشته باشد و هنوز expire نشده باشند.
 func loadSession(c *fiber.Ctx, sessions *mongo.Collection) (session, error) {
 	sessionID := c.Cookies(sessionCookieName)
 	if sessionID == "" {
@@ -516,6 +546,9 @@ func loadSession(c *fiber.Ctx, sessions *mongo.Collection) (session, error) {
 	return doc, nil
 }
 
+// sessionAccessToken access token عمومی Keycloak را از session داخلی برمی‌گرداند.
+// اگر token هنوز معتبر باشد decrypt می‌شود؛ اگر نزدیک انقضا باشد با refresh token تمدید و دوباره در MongoDB ذخیره می‌شود.
+// خروجی این تابع ورودی مرحله Token Exchange برای Superset Operation است.
 func sessionAccessToken(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *tokenCodec) (string, error) {
 	doc, err := loadSession(c, sessions)
 	if err != nil {
@@ -560,6 +593,8 @@ func sessionAccessToken(c *fiber.Ctx, cfg config, sessions *mongo.Collection, co
 	return tokens.AccessToken, nil
 }
 
+// exchangeCode مرحله callback در Authorization Code Flow را کامل می‌کند.
+// این تابع authorization code دریافتی از Keycloak عمومی را به access token و refresh token تبدیل می‌کند.
 func exchangeCode(cfg config, code string) (tokenResponse, error) {
 	values := url.Values{}
 	values.Set("grant_type", "authorization_code")
@@ -568,6 +603,8 @@ func exchangeCode(cfg config, code string) (tokenResponse, error) {
 	return tokenRequest(cfg, values)
 }
 
+// refreshAccessToken با استفاده از refresh token عمومی، access token جدید می‌گیرد.
+// این کار باعث می‌شود session کاربر در Go proxy بدون login مجدد تا زمان مجاز ادامه پیدا کند.
 func refreshAccessToken(cfg config, refreshToken string) (tokenResponse, error) {
 	values := url.Values{}
 	values.Set("grant_type", "refresh_token")
@@ -575,6 +612,9 @@ func refreshAccessToken(cfg config, refreshToken string) (tokenResponse, error) 
 	return tokenRequest(cfg, values)
 }
 
+// tokenRequest درخواست عمومی token endpoint مربوط به Keycloak Public را ارسال می‌کند.
+// این تابع برای exchange کردن authorization code و refresh کردن access token استفاده می‌شود.
+// client id و client secret عمومی را به payload اضافه می‌کند و پاسخ Keycloak را validate می‌کند.
 func tokenRequest(cfg config, values url.Values) (tokenResponse, error) {
 	values.Set("client_id", cfg.KeycloakClientID)
 	values.Set("client_secret", cfg.KeycloakClientSecret)
@@ -605,6 +645,9 @@ func tokenRequest(cfg config, values url.Values) (tokenResponse, error) {
 	return tokens, nil
 }
 
+// exchangeOperationAccessToken توکن عمومی کاربر را به توکن قابل قبول برای محیط Operation تبدیل می‌کند.
+// این تابع grant type استاندارد Token Exchange را می‌سازد و subject token عمومی را به Keycloak عملیات می‌فرستد.
+// خروجی آن access token عملیات است که به Superset Operation ارسال می‌شود.
 func exchangeOperationAccessToken(cfg config, subjectToken string) (tokenResponse, error) {
 	values := url.Values{}
 	values.Set("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
@@ -622,6 +665,8 @@ func exchangeOperationAccessToken(cfg config, subjectToken string) (tokenRespons
 	return operationTokenRequest(cfg, values)
 }
 
+// operationTokenRequest payload Token Exchange را به token endpoint مربوط به Keycloak Operation ارسال می‌کند.
+// این تابع از client محرمانه عملیات استفاده می‌کند و فقط وقتی پاسخ موفق و دارای access token باشد خروجی معتبر می‌دهد.
 func operationTokenRequest(cfg config, values url.Values) (tokenResponse, error) {
 	values.Set("client_id", cfg.OperationKeycloakClientID)
 	values.Set("client_secret", cfg.OperationKeycloakClientSecret)
@@ -652,6 +697,8 @@ func operationTokenRequest(cfg config, values url.Values) (tokenResponse, error)
 	return tokens, nil
 }
 
+// fetchUserInfo اطلاعات کاربر لاگین‌شده را از Keycloak عمومی می‌گیرد.
+// خروجی آن برای ساخت session داخلی Super App و ثبت user id، username و email در MongoDB استفاده می‌شود.
 func fetchUserInfo(cfg config, accessToken string) (userInfo, error) {
 	req, err := http.NewRequest(http.MethodGet, cfg.keycloakRealmURL()+"/protocol/openid-connect/userinfo", nil)
 	if err != nil {
@@ -679,22 +726,33 @@ func fetchUserInfo(cfg config, accessToken string) (userInfo, error) {
 	return info, nil
 }
 
+// keycloakRealmURL آدرس داخلی realm عمومی Keycloak را می‌سازد.
+// backend از این URL برای token endpoint و userinfo در ارتباط server-to-server استفاده می‌کند.
 func (cfg config) keycloakRealmURL() string {
 	return strings.TrimRight(cfg.KeycloakBaseURL, "/") + "/realms/" + cfg.KeycloakRealm
 }
 
+// operationKeycloakRealmURL آدرس داخلی realm عملیات Keycloak را می‌سازد.
+// این URL برای Token Exchange و ارتباط backend با Keycloak محیط Operation استفاده می‌شود.
 func (cfg config) operationKeycloakRealmURL() string {
 	return strings.TrimRight(cfg.OperationKeycloakBaseURL, "/") + "/realms/" + cfg.OperationKeycloakRealm
 }
 
+// keycloakPublicRealmURL آدرس قابل دسترس مرورگر برای realm عمومی Keycloak را می‌سازد.
+// از این URL برای redirect کردن کاربر به صفحه login استفاده می‌شود.
 func (cfg config) keycloakPublicRealmURL() string {
 	return strings.TrimRight(cfg.KeycloakPublicURL, "/") + "/realms/" + cfg.KeycloakRealm
 }
 
+// redirectURI آدرس callback بک‌اند بعد از login در Keycloak را می‌سازد.
+// مقدار ساخته‌شده باید با redirect URI تعریف‌شده در client عمومی Keycloak یکسان باشد.
 func (cfg config) redirectURI() string {
 	return strings.TrimRight(cfg.BackendPublicURL, "/") + "/auth/callback"
 }
 
+// bearerToken تلاش می‌کند token مستقیم موجود در request را استخراج کند.
+// ابتدا header استاندارد Authorization بررسی می‌شود و سپس چند cookie شناخته‌شده خوانده می‌شود.
+// در flow اصلی معماری معمولا token از session داخلی خوانده می‌شود، نه مستقیما از مرورگر.
 func bearerToken(c *fiber.Ctx) string {
 	header := c.Get(fiber.HeaderAuthorization)
 	if strings.HasPrefix(strings.ToLower(header), "bearer ") {
@@ -710,6 +768,8 @@ func bearerToken(c *fiber.Ctx) string {
 	return ""
 }
 
+// safeReturnTo مسیر بازگشت بعد از login را validate می‌کند.
+// فقط مسیرهای داخلی که با یک slash شروع می‌شوند قبول می‌شوند تا open redirect ایجاد نشود.
 func safeReturnTo(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") || strings.Contains(value, "://") {
@@ -718,6 +778,9 @@ func safeReturnTo(value string) string {
 	return value
 }
 
+// rewriteSupersetRedirect مسیر redirectهای برگشتی از Superset را با مسیر proxy سازگار می‌کند.
+// اگر Superset آدرس داخلی یا prefix خودش را در Location برگرداند، این تابع آن را به prefix قابل استفاده مرورگر تبدیل می‌کند.
+// هدف این است که کاربر هیچ‌وقت از مسیر Go proxy خارج نشود.
 func rewriteSupersetRedirect(c *fiber.Ctx, upstreamBaseURL string, upstreamPrefix string, publicPrefix string) {
 	location := c.Response().Header.Peek(fiber.HeaderLocation)
 	if len(location) == 0 {
@@ -755,6 +818,8 @@ func rewriteSupersetRedirect(c *fiber.Ctx, upstreamBaseURL string, upstreamPrefi
 	}
 }
 
+// loadConfig تمام تنظیمات runtime را از env می‌خواند و مقدارهای پیش‌فرض local را اعمال می‌کند.
+// این تابع مرز تنظیمات Public Keycloak، Operation Keycloak، Supersetها، MongoDB و رفتار Token Exchange را مشخص می‌کند.
 func loadConfig() config {
 	operationRequestedTokenType := env(
 		"OPERATION_KEYCLOAK_TOKEN_EXCHANGE_REQUESTED_TOKEN_TYPE",
@@ -785,6 +850,8 @@ func loadConfig() config {
 	}
 }
 
+// env یک helper کوچک برای خواندن متغیر محیطی است.
+// اگر مقدار env خالی باشد، fallback برگردانده می‌شود تا compose local بدون تنظیم همه متغیرها اجرا شود.
 func env(key string, fallback string) string {
 	value := os.Getenv(key)
 	if value == "" {

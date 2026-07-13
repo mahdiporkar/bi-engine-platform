@@ -159,8 +159,8 @@ h1 {
   cursor: pointer;
 }
 
-.zoneLink {
-  text-decoration: none;
+.serviceOnly {
+  cursor: default;
 }
 
 .zoneTab.active {
@@ -175,7 +175,6 @@ h1 {
   gap: 8px;
 }
 
-.portSummary a,
 .portSummary span {
   display: inline-flex;
   align-items: center;

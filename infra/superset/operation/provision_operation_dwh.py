@@ -2,7 +2,6 @@ import os
 
 from superset import db
 from superset.app import create_app
-from superset.models.core import Database
 
 
 database_name = os.environ.get(
@@ -16,6 +15,8 @@ database_uri = os.environ.get(
 
 app = create_app()
 with app.app_context():
+    from superset.models.core import Database
+
     database = db.session.query(Database).filter_by(database_name=database_name).one_or_none()
     if database is None:
         database = Database(database_name=database_name)

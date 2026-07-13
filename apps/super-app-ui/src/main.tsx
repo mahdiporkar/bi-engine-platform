@@ -2,7 +2,6 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import {
   BarChart3,
-  ExternalLink,
   LogIn,
   MonitorCog,
   PanelsTopLeft,
@@ -12,12 +11,6 @@ import "./styles.css";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const publicSupersetUrl = "/superset/public/";
-const operationSupersetUrl = "/api/superset/operation/";
-const publicDirectUrl =
-  import.meta.env.VITE_SUPERSET_PUBLIC_DIRECT_URL ??
-  "http://localhost:8088/superset/public/";
-const publicGatewayUrl = new URL(publicSupersetUrl, window.location.origin).toString();
-const operationGatewayUrl = new URL(operationSupersetUrl, window.location.origin).toString();
 
 function App() {
   return (
@@ -59,32 +52,17 @@ function App() {
                 <PanelsTopLeft size={18} />
                 Public
               </button>
-              <a
-                className="zoneTab zoneLink"
-                href={operationGatewayUrl}
-                target="_blank"
-                rel="noreferrer"
-              >
+              <span className="zoneTab serviceOnly">
                 <MonitorCog size={18} />
-                Operation
-                <ExternalLink size={14} />
-              </a>
+                Operation API
+              </span>
             </div>
             <div className="portSummary" aria-label="Superset ports">
-              <a href={publicGatewayUrl} target="_blank" rel="noreferrer">
-                Public proxy <strong>8080</strong>
-                <ExternalLink size={14} />
-              </a>
-              <a href={publicDirectUrl} target="_blank" rel="noreferrer">
-                Public direct <strong>8088</strong>
-                <ExternalLink size={14} />
-              </a>
-              <a href={operationGatewayUrl} target="_blank" rel="noreferrer">
-                Operation proxy <strong>8080</strong>
-                <ExternalLink size={14} />
-              </a>
               <span>
-                Operation internal <strong>8088</strong>
+                Public UI via proxy <strong>80</strong>
+              </span>
+              <span>
+                Operation API via proxy <strong>80</strong>
               </span>
             </div>
           </div>

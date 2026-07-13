@@ -95,28 +95,24 @@ docker compose build superset-public
    - Superset micro frontend direct: http://localhost:5174
    - Backend direct: http://localhost:8090
    - Keycloak: http://localhost:8081
-   - Superset Public Zone via Go proxy: http://localhost:8080/superset/public/
-   - Superset Operation UI/API via Go proxy: http://localhost:8080/api/superset/operation/
-   - Superset Public direct demo port: http://localhost:8088/superset/public/
+   - Superset Public UI via Go proxy: http://localhost:8080/superset/public/
+   - Superset Operation API via Go proxy: http://localhost:8080/api/superset/operation/api/
 
 ### Local Superset Links
 
-برای تست و نمایش محلی، این لینک‌ها وجود دارند:
+برای تست و نمایش محلی، فقط مسیرهای پشت gateway معتبر هستند:
 
 همین اطلاعات داخل UI هم نمایش داده می‌شود. در Super App اصلی و micro frontend
-مربوط به Superset، کنار تب‌های Public و Operation badgeهای port دیده می‌شود:
+مربوط به Superset، کنار workspace badgeهای port دیده می‌شود:
 
 ```text
-Public proxy: 8080
-Public direct: 8088
-Operation proxy: 8080
-Operation internal: 8088
+Public UI via proxy: 80
+Operation API via proxy: 80
 ```
 
 در دمو، Superset Operation داخل iframe نمایش داده نمی‌شود. UI اصلی دمو فقط
-Superset Public را داخل iframe باز می‌کند. برای مشاهده جداگانه Superset محیط
-Operation، کاربر روی لینک Operation کلیک می‌کند و آن محیط در یک tab جدید باز
-می‌شود.
+Superset Public را داخل iframe باز می‌کند. Superset Operation در این معماری
+سرویس است و برای کاربر Public صفحه HTML/DOM برنمی‌گرداند.
 
 - لینک اصلی کاربران Public از مسیر gateway و Go proxy:
 
@@ -124,26 +120,14 @@ Operation، کاربر روی لینک Operation کلیک می‌کند و آن 
   http://localhost:8080/superset/public/
   ```
 
-- لینک جداگانه Superset محیط Operation برای کاربر/ادمین عملیات:
+- مسیر API محیط Operation از مسیر Go proxy:
 
   ```text
-  http://localhost:8080/api/superset/operation/
+  http://localhost:8080/api/superset/operation/api/
   ```
 
-  از این مسیر می‌توان UI محیط Operation را در یک tab جدا باز کرد و تنظیماتی مثل
-  Database Connection، connection string، dataset و chart را انجام داد. این مسیر
-  همچنان از Go proxy عبور می‌کند و برای ورود به session/token معتبر نیاز دارد.
-
-- لینک direct و نمایشی Superset محیط Public روی port خودش:
-
-  ```text
-  http://localhost:8088/superset/public/
-  ```
-
-  این لینک فقط برای تست local و نمایش اینکه container مربوط به Superset Public
-  روی چه پورتی بالا آمده است استفاده می‌شود. مسیر معماری اصلی Public نیست، چون
-  requestهای آن از Go proxy عبور نمی‌کنند. برای سناریوی واقعی Public باید از
-  `http://localhost:8080/superset/public/` استفاده شود.
+  این مسیر برای UI نیست؛ فقط endpointهای API/JSON/service از این مسیر عبور
+  می‌کنند.
 
 ### مشاهده لاگ ارسال SSO Token به Operation
 
@@ -231,7 +215,8 @@ SUPERSET_OPERATION_DWH_SQLALCHEMY_URI
 
 If you need to add or verify it manually in the Superset Operation Zone:
 
-1. Open http://localhost:8080/api/superset/operation/ after logging in through the Super App.
+1. Open the Operation-only admin access path from inside the Operation network.
+   This path must not be exposed to Public users through the gateway.
 2. Sign in with the local Superset admin user from `.env`.
 3. Go to Settings, then Database Connections.
 4. Add a PostgreSQL database using:
@@ -249,6 +234,114 @@ Visual references:
 - Mermaid architecture diagram: `docs/architecture.mmd`
 - Mermaid authentication sequence: `docs/auth-sequence.mmd`
 - Static demo storyboard: `docs/demo-storyboard.svg`
+
+### بازبینی نهایی معماری مورد نیاز
+
+نیازمندی نهایی این است که دو محیط `Public` و `Operation` فقط از طریق Go proxy و
+روی مسیر gateway/port 80 با هم صحبت کنند. در Docker محلی، port بیرونی gateway به
+دلیل راحتی توسعه روی `8080` publish شده است، اما داخل معماری معادل همان port 80
+است. Superset Public نباید مستقیم به DWH وصل شود و نباید API/data/query را خودش
+اجرا کند. Superset Operation فقط سرویس‌دهنده API/JSON/data است و تنها آن به DWH
+وصل می‌شود.
+
+وضعیت پیاده‌سازی فعلی:
+
+```text
+Public browser traffic  -> http://localhost:8080/superset/public/
+Operation service calls -> http://localhost:8080/api/superset/operation/api/...
+Internal public target  -> http://superset-public:8088/superset/public/...
+Internal operation target -> http://superset-operation:8088/api/superset/operation/api/...
+```
+
+جدول تطبیق نیازمندی با پیاده‌سازی:
+
+| نیازمندی | وضعیت فعلی |
+| --- | --- |
+| کاربر با Authorization Code Flow لاگین کند | پیاده شده در `GET /auth/login` و `GET /auth/callback` |
+| توکن کاربر امن در DB ذخیره شود | پیاده شده؛ access/refresh token با AES-GCM در MongoDB ذخیره می‌شود |
+| session بین کاربر و Go proxy ایجاد شود | پیاده شده؛ cookie `BI_ENGINE_SESSION` از نوع HttpOnly است |
+| raw session id در DB ذخیره نشود | پیاده شده؛ MongoDB فقط hash session id را ذخیره می‌کند |
+| Public فقط UI/asset باشد | از مسیر Go proxy پیاده شده؛ UI/HTML/static از `superset-public` می‌آید |
+| Public درخواست API/data را خودش اجرا نکند | پیاده شده؛ مسیرهای `/api/`، JSON، export و query به Operation route می‌شوند |
+| Operation فقط API/JSON/service بدهد | پیاده شده؛ route مستقیم Operation برای HTML/root رد می‌شود و فقط service prefixes عبور می‌کنند |
+| فقط Operation به DWH وصل شود | پیاده شده؛ `mock-data-warehouse` فقط روی شبکه `operation-zone` است و `superset-public` عضو این شبکه نیست |
+| توکن Public در Operation معتبر شود | پیاده شده از طریق Token Exchange در `exchangeOperationAccessToken` |
+| Superset Operation توکن را اعتبارسنجی کند | پیاده شده در `KeycloakProxySecurityManager` با introspection |
+| دو Keycloak کاملا جدا در local compose | در کد با envهای جدا پشتیبانی شده، ولی compose local فعلا یک Keycloak را برای شبیه‌سازی استفاده می‌کند |
+
+نکته مهم درباره Keycloak:
+
+- در production باید `KEYCLOAK_*` و `OPERATION_KEYCLOAK_*` به دو Keycloak/realm
+  جدا اشاره کنند.
+- در compose فعلی برای ساده‌سازی local development یک Keycloak استفاده شده و
+  clientهای عمومی و عملیات داخل همان realm تعریف شده‌اند.
+- کد backend از ابتدا برای جداسازی آماده است، چون URL، realm، client id و secret
+  عملیات از envهای `OPERATION_KEYCLOAK_*` خوانده می‌شوند.
+
+تفکیک شبکه در compose:
+
+- `gateway`: فقط مسیر ورودی HTTP را نگه می‌دارد؛ Nginx و UIها و Go proxy داخل آن هستند.
+- `public-zone`: ارتباط Go proxy با `superset-public` و redis عمومی را ممکن می‌کند.
+- `operation-zone`: ارتباط Go proxy و `superset-operation` با DWH را ممکن می‌کند.
+- `metadata-zone`: metadata مشترک Superset را نگه می‌دارد تا chart/dataset/dashboard
+  metadata بین Public UI و Operation API یکسان باشد.
+- `auth-zone`: MongoDB و Keycloak محلی را برای session و authentication در اختیار
+  سرویس‌های لازم قرار می‌دهد.
+- `superset-public` در `operation-zone` نیست؛ بنابراین به صورت شبکه‌ای به
+  `mock-data-warehouse` دسترسی ندارد.
+
+نمودار معماری:
+
+```mermaid
+flowchart LR
+  Browser["Browser / User"]
+  Gateway["Gateway :80\n(local: localhost:8080)"]
+  GoProxy["Go Fiber Proxy\nsession + token exchange"]
+  Mongo["MongoDB\nhashed session id + encrypted tokens"]
+  PublicKC["Public Keycloak"]
+  OperationKC["Operation Keycloak"]
+  PublicSS["Superset Public\nUI / React assets"]
+  OperationSS["Superset Operation\nAPI / JSON / Data service"]
+  DWH["DWH / Mock PostgreSQL"]
+
+  Browser -->|"1. Login: Authorization Code Flow"| Gateway
+  Gateway --> GoProxy
+  GoProxy -->|"redirect / token request"| PublicKC
+  PublicKC -->|"public access + refresh token"| GoProxy
+  GoProxy -->|"encrypted tokens + session hash"| Mongo
+  GoProxy -->|"HttpOnly BI_ENGINE_SESSION"| Browser
+
+  Browser -->|"2. Open Public UI"| Gateway
+  Gateway --> GoProxy
+  GoProxy -->|"UI/static only"| PublicSS
+  PublicSS -->|"React assets / HTML shell"| Browser
+
+  Browser -->|"3. Public UI calls /superset/public/api/*"| Gateway
+  Gateway --> GoProxy
+  GoProxy -->|"load session + decrypt/refresh public token"| Mongo
+  GoProxy -->|"Token Exchange"| OperationKC
+  OperationKC -->|"operation access token"| GoProxy
+  GoProxy -->|"Authorization: Bearer operation-token"| OperationSS
+  OperationSS -->|"introspection"| OperationKC
+  OperationSS -->|"query/data only"| DWH
+  OperationSS -->|"JSON/API response"| GoProxy
+  GoProxy --> Browser
+```
+
+نمودار مسیرهای HTTP:
+
+```mermaid
+flowchart TD
+  A["/superset/public/*"] --> B{"نوع مسیر؟"}
+  B -->|"HTML / static / React assets"| C["superset-public:8088"]
+  B -->|"/api/* / *_json / export / SQL Lab"| D["Go proxy: Token Exchange"]
+  D --> E["superset-operation:8088"]
+  E --> F["DWH"]
+
+  G["/api/superset/operation/*"] --> H{"service path؟"}
+  H -->|"بله: /api/* یا JSON/export/query"| D
+  H -->|"خیر: HTML/root"| I["404 service-only"]
+```
 
 ### English
 
@@ -272,18 +365,21 @@ Access and refresh tokens are encrypted with AES-GCM before being persisted. The
 encryption key material is derived from `BACKEND_SESSION_SECRET`, so that secret
 must be strong and environment-specific.
 
-When the user opens report design from the Super App menu, the
-`super-app-superset-ui` micro frontend is loaded. Its iframe points to the Go
-proxy path:
+When the user opens reports from the Super App menu, the
+`super-app-superset-ui` micro frontend is loaded. Its iframe points only to the
+Public Superset UI path:
 
 ```text
-/api/superset/operation/
+/superset/public/
 ```
 
-The iframe does not call Superset directly. Browser requests include the Super
-App session cookie. The Go backend loads the session from MongoDB, decrypts or
-refreshes the public Keycloak access token, exchanges that token with the
-Operation Keycloak, and proxies the request to `superset-operation:8088` with the
+The iframe does not call Operation Superset directly. Browser requests include
+the Super App session cookie. UI/static/HTML requests are served by
+`superset-public:8088`. Service requests generated by that UI, such as API,
+JSON, chart data, export, SQL Lab, and result endpoints, are intercepted by the
+Go backend. The backend loads the session from MongoDB, decrypts or refreshes
+the public Keycloak access token, exchanges that token with the Operation
+Keycloak, and proxies the request to `superset-operation:8088` with the
 Operation-issued token:
 
 ```text
@@ -298,8 +394,8 @@ infra/superset/operation/keycloak_proxy_security_manager.py
 
 That security manager validates the forwarded Operation token against the
 Operation Keycloak OpenID Connect token introspection endpoint. If the token is
-valid, Superset creates or loads the matching local user and serves the page
-without showing the Superset login screen.
+valid, Superset Operation creates or loads the matching local user and returns
+API/JSON/data without showing the Superset login screen to the Public user.
 
 The intended Operation Zone request flow is:
 
@@ -310,12 +406,14 @@ User
   -> Go backend exchanges the authorization code for Keycloak tokens
   -> Go backend stores encrypted tokens in MongoDB
   -> Browser receives an HttpOnly same-origin Super App session cookie
-  -> super-app-superset-ui iframe opens /api/superset/operation/
+  -> super-app-superset-ui iframe opens /superset/public/
+  -> UI/static/HTML traffic is served by superset-public
+  -> API/JSON/data traffic is routed by Go proxy to superset-operation
   -> Go backend loads the session, decrypts/refreshes the public Keycloak access token
   -> Go backend exchanges the public token with Operation Keycloak
-  -> Go backend proxies iframe traffic to superset-operation with Authorization: Bearer <operation token>
+  -> Go backend proxies service traffic to superset-operation with Authorization: Bearer <operation token>
   -> Superset Operation validates the operation token against Operation Keycloak introspection
-  -> Superset creates/loads the matching local user and serves the page without Superset login
+  -> Superset Operation creates/loads the matching local user and returns API/JSON/data without Superset login
 ```
 
 ### فارسی
@@ -339,21 +437,24 @@ Keycloak قبل از ذخیره شدن با AES-GCM رمزنگاری می‌شو
 `BACKEND_SESSION_SECRET` مشتق می‌شود، بنابراین این مقدار باید قوی و مخصوص همان
 محیط باشد.
 
-وقتی کاربر از منوی Super App گزینه طراحی گزارش را انتخاب می‌کند، micro frontend
-به نام `super-app-superset-ui` باز می‌شود. iframe داخل این micro frontend به
-مسیر proxy بک‌اند Go اشاره می‌کند:
+وقتی کاربر از منوی Super App گزارش‌ها را باز می‌کند، micro frontend به نام
+`super-app-superset-ui` باز می‌شود. iframe داخل این micro frontend فقط به مسیر
+UI عمومی Superset اشاره می‌کند:
 
 ```text
-/api/superset/operation/
+/superset/public/
 ```
 
-iframe مستقیما به Superset وصل نمی‌شود. درخواست‌های مرورگر cookie مربوط به
-session در Super App را همراه خود دارند. بک‌اند Go با استفاده از این cookie،
-session را از MongoDB پیدا می‌کند، access token صادرشده توسط Keycloak عمومی را
-decrypt یا در صورت نیاز refresh می‌کند، سپس همان توکن عمومی را با Keycloak محیط
-Operation از طریق Token Exchange تعویض می‌کند. خروجی این مرحله یک access token
-جدید است که issuer و client آن متعلق به محیط Operation است. بک‌اند Go درخواست را
-با header زیر به سرویس `superset-operation:8088` ارسال می‌کند:
+iframe مستقیما به Superset Operation وصل نمی‌شود. درخواست‌های مرورگر cookie
+مربوط به session در Super App را همراه خود دارند. درخواست‌های HTML/static/React
+asset از `superset-public:8088` پاسخ داده می‌شوند. اما درخواست‌های service مثل
+API، JSON، chart data، export، SQL Lab و result توسط Go proxy تشخیص داده می‌شوند.
+بک‌اند Go با استفاده از cookie، session را از MongoDB پیدا می‌کند، access token
+صادرشده توسط Keycloak عمومی را decrypt یا در صورت نیاز refresh می‌کند، سپس همان
+توکن عمومی را با Keycloak محیط Operation از طریق Token Exchange تعویض می‌کند.
+خروجی این مرحله یک access token جدید است که issuer و client آن متعلق به محیط
+Operation است. بک‌اند Go درخواست service را با header زیر به سرویس
+`superset-operation:8088` ارسال می‌کند:
 
 ```text
 Authorization: Bearer <Operation Keycloak access token>
@@ -369,8 +470,8 @@ infra/superset/operation/keycloak_proxy_security_manager.py
 introspection در Keycloak محیط Operation اعتبارسنجی می‌کند. بنابراین Superset
 Operation توکن Keycloak عمومی را مستقیما trust نمی‌کند؛ Superset فقط توکنی را
 می‌پذیرد که Keycloak عملیات آن را معتبر اعلام کند. اگر توکن معتبر باشد، Superset
-کاربر متناظر را ایجاد یا بارگذاری می‌کند و صفحه را بدون نمایش login داخلی
-Superset به کاربر نشان می‌دهد.
+کاربر متناظر را ایجاد یا بارگذاری می‌کند و API/JSON/data را بدون login مجدد
+Superset به کاربر عمومی برمی‌گرداند.
 
 جریان هدف در محیط Operation به شکل زیر است:
 
@@ -381,12 +482,14 @@ Superset به کاربر نشان می‌دهد.
   -> تعویض authorization code با توکن‌های Keycloak در بک‌اند Go
   -> ذخیره توکن‌های رمزنگاری‌شده در MongoDB
   -> دریافت cookie از نوع HttpOnly برای session در Super App
-  -> باز شدن iframe در super-app-superset-ui روی مسیر /api/superset/operation/
+  -> باز شدن iframe در super-app-superset-ui روی مسیر /superset/public/
+  -> پاسخ دادن HTML/static/React asset توسط superset-public
+  -> هدایت requestهای API/JSON/data توسط Go proxy به superset-operation
   -> بارگذاری session توسط Go، decrypt/refresh کردن access token عمومی
   -> Token Exchange بین Go proxy و Keycloak محیط Operation
-  -> proxy شدن درخواست iframe به superset-operation با Authorization: Bearer <operation token>
+  -> proxy شدن درخواست service به superset-operation با Authorization: Bearer <operation token>
   -> اعتبارسنجی توکن عملیات توسط Superset Operation از طریق introspection در Keycloak عملیات
-  -> ایجاد/بارگذاری کاربر متناظر در Superset و نمایش صفحه بدون login مجدد
+  -> ایجاد/بارگذاری کاربر متناظر در Superset Operation و برگشت API/JSON/data بدون login مجدد
 ```
 
 ### Operation Zone Auth Details
@@ -435,7 +538,7 @@ Local Keycloak persistence:
 
 Operation routing:
 
-- `/api/superset/operation/*` is the canonical iframe/proxy route.
+- `/api/superset/operation/*` is the canonical service/API proxy route.
 - `/superset/operation/*` also routes to the Go backend proxy, so users cannot
   bypass the Super App session path through the local nginx gateway.
 
@@ -489,7 +592,7 @@ services/super-app-backend/cmd/server/main.go
 - کاربر همچنان با `GET /api/auth/login` وارد Keycloak عمومی می‌شود.
 - callback در `GET /api/auth/callback` authorization code را با توکن‌های Keycloak عمومی تعویض می‌کند.
 - access token و refresh token عمومی به صورت رمزنگاری‌شده در MongoDB ذخیره می‌شوند.
-- وقتی iframe مسیر `/api/superset/operation/` را باز می‌کند، Go proxy session را از cookie پیدا می‌کند.
+- وقتی UI عمومی یک request سرویس مثل `/superset/public/api/...` تولید می‌کند، Go proxy session را از cookie پیدا می‌کند.
 - اگر access token عمومی منقضی شده باشد، با refresh token عمومی آن را refresh می‌کند.
 - قبل از proxy کردن request به `superset-operation`، تابع `exchangeOperationAccessToken` اجرا می‌شود.
 - این تابع با grant type زیر به token endpoint Keycloak عملیات درخواست می‌زند:
@@ -979,6 +1082,7 @@ Operation برود.
 prefixهای عملیاتی شامل این موارد هستند:
 
 ```text
+/api
 /api/
 /superset/explore_json
 /superset/results
@@ -1546,16 +1650,15 @@ Both configs are integration-time settings only. Superset code patches, map chan
 `superset-operation`:
 
 - نقش اصلی آن سرویس‌دهی عملیاتی است.
-- مسیر canonical آن از پشت Go proxy برابر `/api/superset/operation/` است.
+- مسیر canonical سرویس آن از پشت Go proxy برابر `/api/superset/operation/` است.
 - اتصال DWH تستی فقط در این محیط provision می‌شود.
 - token ارسال‌شده توسط Go proxy را introspect می‌کند.
 - JSON، API، chart data، export، SQL Lab و درخواست‌های داده‌ای را پاسخ می‌دهد.
-- برای کاربران و ادمین‌های محیط Operation، UI خود Superset Operation هم قابل
-  مشاهده است تا بتوانند Database Connection، dataset، chart و تنظیمات مدیریتی را
-  انجام دهند.
-- این UI عملیاتی برای کاربران Public نیست. کاربران Public فقط مسیر
-  `/superset/public/` را می‌بینند و درخواست‌های سرویس‌دهی آن‌ها از طریق Go proxy
-  به Operation می‌رسد.
+- از مسیر gateway عمومی، HTML/root محیط Operation نمایش داده نمی‌شود و Go proxy
+  فقط مسیرهای service/API آن را عبور می‌دهد.
+- اگر در استقرار واقعی نیاز به UI مدیریتی Operation برای تعریف Database
+  Connection، dataset و chart وجود داشته باشد، آن UI باید فقط داخل شبکه Operation
+  و خارج از مسیر Public در اختیار ادمین عملیات قرار بگیرد.
 
 `super-app-backend`:
 
@@ -1573,10 +1676,10 @@ Both configs are integration-time settings only. Superset code patches, map chan
 query عملیاتی اجرا کند. هر request داده‌ای که از UI عمومی تولید شود، اول به Go
 proxy می‌رسد و سپس با توکن عملیات به Superset Operation forward می‌شود.
 
-در مقابل، محیط Operation یک شبکه و دسترسی عملیاتی جدا دارد. کاربر یا ادمین محیط
-Operation می‌تواند UI خود Superset Operation را باز کند و داخل همان محیط connection
-string دیتابیس، datasetها، chartها و تنظیمات BI را مدیریت کند. این UI برای مدیریت
-عملیات است، نه برای کاربران Public.
+در مقابل، محیط Operation یک شبکه و دسترسی عملیاتی جدا دارد. از دید Public،
+Operation فقط API/JSON/data برمی‌گرداند. هر UI مدیریتی Operation، اگر در محیط
+واقعی لازم باشد، باید فقط از داخل همان شبکه Operation و خارج از مسیر Public قابل
+دسترسی باشد.
 
 ### جریان نهایی درخواست‌ها
 
@@ -1854,9 +1957,14 @@ operation -> /api/superset/operation/
 
 #### route `ALL /superset/operation/*`
 
-هدف: ارسال همه requestهای محیط عملیات به Superset عملیات.
+هدف: ارسال requestهای service/API محیط عملیات به Superset Operation.
 
 ```go
+if !isSupersetServiceRequest(c.Params("*")) {
+    return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+        "error": "operation Superset is service-only; use /superset/public/ for UI",
+    })
+}
 return proxySuperset(
     c,
     cfg,
@@ -1876,10 +1984,9 @@ return proxySuperset(
 - prefix عمومی هم همان `/api/superset/operation` است.
 - zone برابر `operation` است، پس Token Exchange فعال می‌شود.
 
-نکته: این route برای کاربران محیط Operation است. بنابراین HTML/UI خود Superset
-Operation هم از همین مسیر قابل مشاهده است تا ادمین عملیات بتواند connection
-string، dataset، chart و تنظیمات Superset را مدیریت کند. این مسیر نباید به عنوان
-UI کاربران Public استفاده شود.
+نکته: قبل از proxy شدن، مسیر با `isSupersetServiceRequest` بررسی می‌شود. اگر مسیر
+service/API نباشد، Go proxy پاسخ `404` می‌دهد. بنابراین Superset Operation در این
+flow به مرورگر HTML/DOM نمی‌دهد و فقط نقش سرویس را دارد.
 
 #### route `ALL /superset/public/*`
 
@@ -1920,19 +2027,24 @@ Keycloak شود.
 منطق خط‌به‌خط:
 
 1. `bearerToken(c)` بررسی می‌کند آیا request خودش bearer token دارد یا نه.
-2. اگر token نبود، `sessionAccessToken` از session داخلی access token عمومی را می‌گیرد.
-3. اگر session مشکل داشت و zone عملیات بود، درخواست unauthorized می‌شود.
-4. اگر token وجود داشت و zone عملیات بود و Token Exchange فعال بود، `exchangeOperationAccessToken` اجرا می‌شود.
-5. خروجی Token Exchange جایگزین token عمومی می‌شود.
-6. اگر هنوز token وجود نداشته باشد و bypass فعال نباشد، درخواست با `401` رد می‌شود.
-7. اگر token وجود داشته باشد، header `Authorization` با مقدار `Bearer <token>` روی request تنظیم می‌شود.
-8. wildcard مسیر از route خوانده می‌شود.
-9. اگر مسیر اصلی با `/` تمام شده باشد، trailing slash حفظ می‌شود.
-10. target با ترکیب `upstreamBaseURL + upstreamPrefix + wildcard` ساخته می‌شود.
-11. query string اصلی به target اضافه می‌شود.
-12. header `X-BI-Engine-Proxy` برای traceability تنظیم می‌شود.
-13. `proxy.Do` request را به upstream می‌فرستد.
-14. بعد از پاسخ، `rewriteSupersetRedirect` مسیر redirectهای Superset را اصلاح می‌کند.
+2. `tokenSource` ابتدا برابر `request` است؛ یعنی اگر token مستقیم در header/cookie باشد، منبع آن request محسوب می‌شود.
+3. اگر token نبود، `tokenSource` برابر `session` می‌شود.
+4. سپس `sessionAccessToken` از session داخلی access token عمومی را می‌گیرد.
+5. اگر session مشکل داشت و zone عملیات بود، درخواست unauthorized می‌شود.
+6. اگر token وجود داشت و zone عملیات بود و Token Exchange فعال بود، `exchangeOperationAccessToken` اجرا می‌شود.
+7. خروجی Token Exchange جایگزین token عمومی می‌شود.
+8. در این حالت `tokenExchanged=true` می‌شود تا در log مشخص باشد token عملیات ساخته شده است.
+9. اگر هنوز token وجود نداشته باشد و bypass غیرفعال باشد، درخواست با `401` رد می‌شود.
+10. اگر token وجود داشته باشد، header `Authorization` با مقدار `Bearer <token>` روی request تنظیم می‌شود.
+11. wildcard مسیر از route خوانده می‌شود.
+12. اگر مسیر اصلی با slash تمام شده باشد، trailing slash حفظ می‌شود.
+13. `targetWithoutQuery` بدون query string ساخته می‌شود تا در log مقدارهای احتمالی حساس query چاپ نشوند.
+14. `target` با query string اصلی ساخته می‌شود و برای proxy واقعی استفاده می‌شود.
+15. header `X-BI-Engine-Proxy` برای trace/debug تنظیم می‌شود.
+16. اگر zone برابر `operation` باشد، log با prefix `superset_operation_proxy` چاپ می‌شود.
+17. در این log مقدار خام token چاپ نمی‌شود؛ فقط `tokenFingerprint` نمایش داده می‌شود.
+18. `proxy.Do` request را به upstream می‌فرستد.
+19. بعد از پاسخ، `rewriteSupersetRedirect` مسیر redirectهای Superset را اصلاح می‌کند.
 
 #### تابع `isSupersetServiceRequest`
 
@@ -1968,6 +2080,20 @@ prefixهای فعلی:
 
 - `true`: request به Superset عملیات می‌رود.
 - `false`: request به Superset عمومی می‌رود.
+
+#### تابع `tokenFingerprint`
+
+هدف: ساخت شناسه کوتاه و امن برای trace کردن token در log بدون افشای خود token.
+
+منطق خط‌به‌خط:
+
+1. اگر token خالی باشد، مقدار `none` برگردانده می‌شود.
+2. اگر token وجود داشته باشد، با SHA-256 hash می‌شود.
+3. hash به base64 URL-safe تبدیل می‌شود.
+4. فقط 16 کاراکتر اول hash برگردانده می‌شود.
+5. این مقدار در logهای `superset_operation_proxy` استفاده می‌شود.
+
+نکته امنیتی: این تابع برای debugging است و هرگز access token خام را چاپ نمی‌کند.
 
 #### struct `tokenCodec`
 
@@ -2360,13 +2486,13 @@ prefixهای فعلی:
 1. `os` برای خواندن env import می‌شود.
 2. `db` از Superset برای کار با metadata database import می‌شود.
 3. `create_app` برای ساخت context اپلیکیشن Superset import می‌شود.
-4. `Database` مدل connection دیتابیس‌های Superset است.
-5. `database_name` از env `SUPERSET_OPERATION_DWH_DATABASE_NAME` خوانده می‌شود.
-6. اگر env نبود، نام `Mock Data Warehouse` استفاده می‌شود.
-7. `database_uri` از env `SUPERSET_OPERATION_DWH_SQLALCHEMY_URI` خوانده می‌شود.
-8. اگر env نبود، URI مربوط به `mock-data-warehouse` استفاده می‌شود.
-9. app Superset ساخته می‌شود.
-10. داخل `app.app_context` عملیات metadata انجام می‌شود.
+4. `database_name` از env `SUPERSET_OPERATION_DWH_DATABASE_NAME` خوانده می‌شود.
+5. اگر env نبود، نام `Mock Data Warehouse` استفاده می‌شود.
+6. `database_uri` از env `SUPERSET_OPERATION_DWH_SQLALCHEMY_URI` خوانده می‌شود.
+7. اگر env نبود، URI مربوط به `mock-data-warehouse` استفاده می‌شود.
+8. app Superset ساخته می‌شود.
+9. داخل `app.app_context` عملیات metadata انجام می‌شود.
+10. `Database` داخل app context import می‌شود تا app و encrypt manager Superset قبل از ساخت مدل initialize شده باشند.
 11. دیتابیس با همان نام جستجو می‌شود.
 12. اگر وجود نداشته باشد، یک `Database` جدید ساخته و به session اضافه می‌شود.
 13. URI اتصال با `set_sqlalchemy_uri` تنظیم می‌شود.
@@ -2422,8 +2548,8 @@ prefixهای فعلی:
 - از image ساخته‌شده از fork محلی Superset استفاده می‌کند.
 - `SUPERSET_APP_ROOT` آن `/superset/public` است.
 - config عمومی را mount می‌کند.
-- پورت مستقیم `SUPERSET_PUBLIC_PORT` فقط برای تست و نمایش local publish می‌شود.
-  مسیر اصلی معماری همچنان gateway و Go proxy است.
+- پورت مستقیم به host publish نمی‌کند. فقط gateway/nginx روی port 80 به Go proxy
+  وصل است و Go proxy در صورت نیاز request را به `superset-public:8088` می‌فرستد.
 - به جای metadata DB جداگانه، به `superset-operation-db` وصل است تا UI عمومی همان
   chart، dataset و dashboard metadata را ببیند که Operation API ذخیره و استفاده می‌کند.
   این کار برای جلوگیری از خطاهایی مثل `slice=null` در زمان save/overwrite chart لازم است.
@@ -2435,9 +2561,8 @@ prefixهای فعلی:
 - security manager عملیات را mount می‌کند.
 - `provision_operation_dwh.py` را هنگام startup اجرا می‌کند.
 - به `mock-data-warehouse` وابسته است.
-- UI و API آن برای کاربران محیط Operation از مسیر
-  `/api/superset/operation/` قابل دسترسی است تا تنظیم connection string و مدیریت
-  BI انجام شود. کاربران Public نباید این UI را استفاده کنند.
+- فقط مسیرهای service/API آن از پشت Go proxy قابل دسترسی هستند. root/HTML/UI
+  عملیات از مسیر public نمایش داده نمی‌شود.
 
 سرویس `mock-data-warehouse`:
 

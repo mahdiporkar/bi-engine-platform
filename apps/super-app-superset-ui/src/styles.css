@@ -72,9 +72,22 @@ body {
   text-decoration: none;
 }
 
+.serviceBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid #ccd6e2;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #607086;
+  font-weight: 700;
+}
+
 .portsPanel {
   display: grid;
-  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
   gap: 10px;
   padding: 12px 28px;
   background: #fff;
@@ -83,7 +96,7 @@ body {
 
 .portItem {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: 10px;
   min-height: 42px;
@@ -91,11 +104,6 @@ body {
   border: 1px solid #d8e1eb;
   border-radius: 8px;
   background: #f9fbfd;
-}
-
-.portItem.muted {
-  grid-template-columns: 1fr auto;
-  color: #607086;
 }
 
 .portLabel {
@@ -108,18 +116,6 @@ body {
 .portItem strong {
   color: #1f334f;
   font-size: 15px;
-}
-
-.portItem a {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  color: #1265b7;
-  background: #fff;
-  border: 1px solid #d8e1eb;
 }
 
 .frame {
