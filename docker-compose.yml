@@ -89,7 +89,9 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:25.0
-    command: start-dev --import-realm
+    command: start-dev --features=token-exchange --import-realm
+    depends_on:
+      - keycloak-db
     ports:
       - "${KEYCLOAK_PORT:-8081}:8080"
     environment:
@@ -97,8 +99,24 @@ services:
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8081}
       KC_HOSTNAME_STRICT: "false"
+      KC_DB: postgres
+      KC_DB_URL_HOST: keycloak-db
+      KC_DB_URL_DATABASE: ${KEYCLOAK_DB_NAME:-keycloak}
+      KC_DB_USERNAME: ${KEYCLOAK_DB_USER:-keycloak}
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
     volumes:
       - ./infra/keycloak/realm-bi-engine.json:/opt/keycloak/data/import/realm-bi-engine.json:ro
+    networks:
+      - platform
+
+  keycloak-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${KEYCLOAK_DB_NAME:-keycloak}
+      POSTGRES_USER: ${KEYCLOAK_DB_USER:-keycloak}
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
+    volumes:
+      - keycloak-db-data:/var/lib/postgresql/data
     networks:
       - platform
 
@@ -199,7 +217,7 @@ services:
       /bin/sh -c "superset db upgrade &&
       superset fab create-admin --username $$SUPERSET_ADMIN_USERNAME --firstname BI --lastname Admin --email $$SUPERSET_ADMIN_EMAIL --password $$SUPERSET_ADMIN_PASSWORD || true &&
       superset init &&
-      superset set-database-uri -d \"$$SUPERSET_OPERATION_DWH_DATABASE_NAME\" -u \"$$SUPERSET_OPERATION_DWH_SQLALCHEMY_URI\" &&
+      python /app/pythonpath/provision_operation_dwh.py &&
       superset run -h 0.0.0.0 -p 8088"
     environment:
       SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
@@ -222,6 +240,7 @@ services:
     volumes:
       - ./infra/superset/operation/superset_config.py:/app/pythonpath/superset_config.py:ro
       - ./infra/superset/operation/keycloak_proxy_security_manager.py:/app/pythonpath/keycloak_proxy_security_manager.py:ro
+      - ./infra/superset/operation/provision_operation_dwh.py:/app/pythonpath/provision_operation_dwh.py:ro
     networks:
       - platform
 
@@ -230,6 +249,7 @@ networks:
     driver: bridge
 
 volumes:
+  keycloak-db-data:
   mongo-data:
   mock-data-warehouse-data:
   superset-public-db-data:

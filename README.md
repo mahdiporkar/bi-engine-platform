@@ -9,6 +9,7 @@ This repository owns the integration layer:
 - Go Fiber backend/proxy
 - MongoDB session management
 - Keycloak local identity setup
+- Keycloak PostgreSQL metadata database for stable local SSO state
 - Nginx local gateway
 - Docker Compose orchestration
 - Local Public Zone / Operation Zone simulation
@@ -93,7 +94,7 @@ docker compose build superset-public
    - Super App UI direct: http://localhost:5173
    - Superset micro frontend direct: http://localhost:5174
    - Backend direct: http://localhost:8090
-   - Keycloak: http://localhost:8081
+- Keycloak: http://localhost:8081
    - Superset Public Zone direct: http://localhost:8088
    - Superset Operation Zone via Go proxy: http://localhost:8080/api/superset/operation/
 
@@ -123,7 +124,11 @@ trends, top product categories, order status distribution, and customer segment
 analysis.
 
 The `superset-operation` service provisions this connection automatically during
-startup with Superset's `set-database-uri` CLI:
+startup with:
+
+```text
+infra/superset/operation/provision_operation_dwh.py
+```
 
 ```text
 Database name: Mock Data Warehouse
@@ -333,6 +338,14 @@ Keycloak URL split:
 - `OPERATION_KEYCLOAK_TOKEN_EXCHANGE_ENABLED=true` makes the Go proxy exchange
   the public access token before forwarding requests to Superset Operation.
 
+Local Keycloak persistence:
+
+- The local Keycloak service uses the `keycloak-db` PostgreSQL container.
+- This avoids the instability of the embedded H2 dev database during repeated
+  Docker restarts.
+- The local database settings are controlled by `KEYCLOAK_DB_NAME`,
+  `KEYCLOAK_DB_USER`, and `KEYCLOAK_DB_PASSWORD`.
+
 Operation routing:
 
 - `/api/superset/operation/*` is the canonical iframe/proxy route.
@@ -359,6 +372,11 @@ Required Keycloak settings:
   realm/client roles.
 - The public Keycloak client must allow Authorization Code Flow and refresh
   tokens for the Super App.
+- Token Exchange must be enabled on Keycloak. In local Docker Compose this is
+  done with `start-dev --features=token-exchange --import-realm`.
+- The public `super-app` client must include `superset-operation` in the access
+  token audience. The local realm import does this with the
+  `superset-operation-audience` protocol mapper.
 - The Operation Keycloak client must be confidential, must be allowed to receive
   token-exchange requests from the Go proxy, and must be allowed to introspect
   the exchanged Operation tokens.
