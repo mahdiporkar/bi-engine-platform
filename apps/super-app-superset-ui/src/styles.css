@@ -15,7 +15,7 @@ body {
 .page {
   min-height: 100vh;
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto auto 1fr;
 }
 
 .header {
@@ -72,6 +72,56 @@ body {
   text-decoration: none;
 }
 
+.portsPanel {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  gap: 10px;
+  padding: 12px 28px;
+  background: #fff;
+  border-bottom: 1px solid #dbe2ea;
+}
+
+.portItem {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid #d8e1eb;
+  border-radius: 8px;
+  background: #f9fbfd;
+}
+
+.portItem.muted {
+  grid-template-columns: 1fr auto;
+  color: #607086;
+}
+
+.portLabel {
+  min-width: 0;
+  color: #607086;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.portItem strong {
+  color: #1f334f;
+  font-size: 15px;
+}
+
+.portItem a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: #1265b7;
+  background: #fff;
+  border: 1px solid #d8e1eb;
+}
+
 .frame {
   width: 100%;
   height: 100%;
@@ -91,5 +141,9 @@ body {
     overflow-x: auto;
     padding: 10px 18px;
   }
-}
 
+  .portsPanel {
+    grid-template-columns: 1fr;
+    padding: 10px 18px;
+  }
+}

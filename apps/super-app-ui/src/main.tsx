@@ -1,18 +1,25 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, LogIn, MonitorCog, PanelsTopLeft, ShieldCheck } from "lucide-react";
+import {
+  BarChart3,
+  ExternalLink,
+  LogIn,
+  MonitorCog,
+  PanelsTopLeft,
+  ShieldCheck,
+} from "lucide-react";
 import "./styles.css";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const publicSupersetUrl = "/superset/public/";
 const operationSupersetUrl = "/api/superset/operation/";
-
-type SupersetZone = "public" | "operation";
+const publicDirectUrl =
+  import.meta.env.VITE_SUPERSET_PUBLIC_DIRECT_URL ??
+  "http://localhost:8088/superset/public/";
+const publicGatewayUrl = new URL(publicSupersetUrl, window.location.origin).toString();
+const operationGatewayUrl = new URL(operationSupersetUrl, window.location.origin).toString();
 
 function App() {
-  const [activeZone, setActiveZone] = React.useState<SupersetZone>("public");
-  const frameUrl = activeZone === "public" ? publicSupersetUrl : operationSupersetUrl;
-
   return (
     <main className="shell">
       <aside className="nav">
@@ -46,27 +53,45 @@ function App() {
           <div className="workspaceBar">
             <div className="zoneTabs" aria-label="Superset zone">
               <button
-                className={activeZone === "public" ? "zoneTab active" : "zoneTab"}
+                className="zoneTab active"
                 type="button"
-                onClick={() => setActiveZone("public")}
               >
                 <PanelsTopLeft size={18} />
                 Public
               </button>
-              <button
-                className={activeZone === "operation" ? "zoneTab active" : "zoneTab"}
-                type="button"
-                onClick={() => setActiveZone("operation")}
+              <a
+                className="zoneTab zoneLink"
+                href={operationGatewayUrl}
+                target="_blank"
+                rel="noreferrer"
               >
                 <MonitorCog size={18} />
                 Operation
-              </button>
+                <ExternalLink size={14} />
+              </a>
+            </div>
+            <div className="portSummary" aria-label="Superset ports">
+              <a href={publicGatewayUrl} target="_blank" rel="noreferrer">
+                Public proxy <strong>8080</strong>
+                <ExternalLink size={14} />
+              </a>
+              <a href={publicDirectUrl} target="_blank" rel="noreferrer">
+                Public direct <strong>8088</strong>
+                <ExternalLink size={14} />
+              </a>
+              <a href={operationGatewayUrl} target="_blank" rel="noreferrer">
+                Operation proxy <strong>8080</strong>
+                <ExternalLink size={14} />
+              </a>
+              <span>
+                Operation internal <strong>8088</strong>
+              </span>
             </div>
           </div>
 
           <iframe
-            title="Superset workspace"
-            src={frameUrl}
+            title="Superset public workspace"
+            src={publicSupersetUrl}
             className="supersetFrame"
             allow="fullscreen"
           />

@@ -294,7 +294,7 @@ func main() {
 	})
 
 	app.All("/superset/public/*", func(c *fiber.Ctx) error {
-		if isSupersetDataRequest(c.Params("*")) {
+		if isSupersetServiceRequest(c.Params("*")) {
 			return proxySuperset(c, cfg, sessions, codec, cfg.SupersetOperationURL, "/api/superset/operation", "/superset/public", "operation")
 		}
 		return proxySuperset(c, cfg, sessions, codec, cfg.SupersetPublicURL, "/superset/public", "/superset/public", "public")
@@ -345,7 +345,10 @@ func main() {
 
 func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *tokenCodec, upstreamBaseURL string, upstreamPrefix string, publicPrefix string, zone string) error {
 	token := bearerToken(c)
+	tokenSource := "request"
+	tokenExchanged := false
 	if token == "" {
+		tokenSource = "session"
 		sessionToken, err := sessionAccessToken(c, cfg, sessions, codec)
 		if err != nil && zone == "operation" && env("ALLOW_SUPERSET_PROXY_WITHOUT_TOKEN", "false") != "true" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -362,6 +365,7 @@ func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *
 			})
 		}
 		token = operationToken.AccessToken
+		tokenExchanged = true
 	}
 	if token == "" && env("ALLOW_SUPERSET_PROXY_WITHOUT_TOKEN", "false") != "true" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -376,12 +380,25 @@ func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *
 	if strings.HasSuffix(c.Path(), "/") && wildcard != "" && !strings.HasSuffix(wildcard, "/") {
 		wildcard += "/"
 	}
-	target := strings.TrimRight(upstreamBaseURL, "/") + strings.TrimRight(upstreamPrefix, "/") + "/" + wildcard
+	targetWithoutQuery := strings.TrimRight(upstreamBaseURL, "/") + strings.TrimRight(upstreamPrefix, "/") + "/" + wildcard
+	target := targetWithoutQuery
 	if query := string(c.Request().URI().QueryString()); query != "" {
 		target += "?" + query
 	}
 
 	c.Request().Header.Set("X-BI-Engine-Proxy", "super-app-backend")
+	if zone == "operation" {
+		log.Printf(
+			"superset_operation_proxy method=%s path=%s upstream=%s sso_token_forwarded=%t token_source=%s token_exchange=%t token_fingerprint=%s",
+			c.Method(),
+			c.Path(),
+			targetWithoutQuery,
+			token != "",
+			tokenSource,
+			tokenExchanged,
+			tokenFingerprint(token),
+		)
+	}
 	if err := proxy.Do(c, target); err != nil {
 		return err
 	}
@@ -389,9 +406,9 @@ func proxySuperset(c *fiber.Ctx, cfg config, sessions *mongo.Collection, codec *
 	return nil
 }
 
-func isSupersetDataRequest(wildcard string) bool {
+func isSupersetServiceRequest(wildcard string) bool {
 	path := "/" + strings.TrimLeft(strings.ToLower(strings.TrimSpace(wildcard)), "/")
-	dataPrefixes := []string{
+	servicePrefixes := []string{
 		"/api/",
 		"/superset/explore_json",
 		"/superset/results",
@@ -405,12 +422,20 @@ func isSupersetDataRequest(wildcard string) bool {
 		"/savedqueryviewapi/",
 		"/sqllab/",
 	}
-	for _, prefix := range dataPrefixes {
+	for _, prefix := range servicePrefixes {
 		if strings.HasPrefix(path, prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+func tokenFingerprint(token string) string {
+	if token == "" {
+		return "none"
+	}
+	hash := sha256.Sum256([]byte(token))
+	return base64.RawURLEncoding.EncodeToString(hash[:])[:16]
 }
 
 type tokenCodec struct {

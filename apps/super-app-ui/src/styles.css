@@ -159,9 +159,42 @@ h1 {
   cursor: pointer;
 }
 
+.zoneLink {
+  text-decoration: none;
+}
+
 .zoneTab.active {
   background: #152033;
   color: #fff;
+}
+
+.portSummary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.portSummary a,
+.portSummary span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid #dce3ed;
+  border-radius: 8px;
+  background: #fff;
+  color: #526072;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.portSummary strong {
+  color: #152033;
+  font-size: 13px;
 }
 
 .supersetFrame {
@@ -198,6 +231,15 @@ h1 {
   .workspaceBar,
   .zoneTabs {
     width: 100%;
+  }
+
+  .workspaceBar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .portSummary {
+    justify-content: flex-start;
   }
 
   .zoneTab {
